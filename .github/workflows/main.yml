@@ -69,6 +69,7 @@ jobs:
 
           npx cap add android
           sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
+          find android/app/src/main -name "MainActivity.java"
           npx cap sync android
           npx @capacitor/assets generate --android
 
