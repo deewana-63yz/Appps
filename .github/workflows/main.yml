@@ -99,9 +99,9 @@ jobs:
               private BannerAd banner;
               private InterstitialAd interstitial;
 
-              private boolean loadingBanner = false;
-              private boolean loadingInterstitial = false;
-              private boolean appResumed = false;
+              private boolean loadingBanner;
+              private boolean loadingInterstitial;
+              private boolean appResumed;
 
               private final Runnable interstitialTimer = new Runnable() {
                   @Override
@@ -124,37 +124,33 @@ jobs:
                       InterstitialAd ad = interstitial;
                       interstitial = null;
 
-                      try {
-                          ad.show(
-                                  MainActivity.this,
-                                  new ShowConfiguration.Builder().build(),
-                                  new InterstitialShowListener() {
-                                      @Override
-                                      public void onStarted(InterstitialAd ad) {
-                                      }
-
-                                      @Override
-                                      public void onClicked(InterstitialAd ad) {
-                                      }
-
-                                      @Override
-                                      public void onCompleted(
-                                              InterstitialAd ad,
-                                              ShowFinishState state) {
-                                          afterInterstitial();
-                                      }
-
-                                      @Override
-                                      public void onFailed(
-                                              InterstitialAd ad,
-                                              UnityAdsError error) {
-                                          afterInterstitial();
-                                      }
+                      ad.show(
+                              MainActivity.this,
+                              new ShowConfiguration.Builder().build(),
+                              new InterstitialShowListener() {
+                                  @Override
+                                  public void onStarted(InterstitialAd ad) {
                                   }
-                          );
-                      } catch (Exception e) {
-                          afterInterstitial();
-                      }
+
+                                  @Override
+                                  public void onClicked(InterstitialAd ad) {
+                                  }
+
+                                  @Override
+                                  public void onCompleted(
+                                          InterstitialAd ad,
+                                          ShowFinishState state) {
+                                      afterInterstitial();
+                                  }
+
+                                  @Override
+                                  public void onFailed(
+                                          InterstitialAd ad,
+                                          UnityAdsError error) {
+                                      afterInterstitial();
+                                  }
+                              }
+                      );
                   }
               };
 
@@ -166,7 +162,7 @@ jobs:
                           findViewById(android.R.id.content);
 
                   bannerContainer = new LinearLayout(this);
-                  bannerContainer.setGravity(Gravity.CENTER_HORIZONTAL);
+                  bannerContainer.setGravity(Gravity.CENTER);
 
                   FrameLayout.LayoutParams params =
                           new FrameLayout.LayoutParams(
@@ -182,78 +178,88 @@ jobs:
                                   .withTestMode(false)
                                   .build();
 
-                  UnityAds.initialize(config, error -> {
-                      if (error == null) {
-                          loadBanner();
-                          loadInterstitial();
+                  UnityAds.initialize(config, new InitializationListener() {
+                      @Override
+                      public void onInitializationComplete(
+                              UnityAdsError error) {
+                          if (error == null) {
+                              handler.post(() -> {
+                                  loadBanner();
+                                  loadInterstitial();
+                              });
+                          }
                       }
                   });
               }
 
               private void loadBanner() {
-                  if (loadingBanner || banner != null) {
+                  if (loadingBanner || banner != null
+                          || isFinishing() || isDestroyed()) {
                       return;
                   }
 
                   loadingBanner = true;
 
-                  BannerShowListener listener = new BannerShowListener() {
-                      @Override
-                      public void onImpression(BannerAd ad) {
-                      }
+                  BannerShowListener showListener =
+                          new BannerShowListener() {
+                              @Override
+                              public void onImpression(BannerAd ad) {
+                              }
 
-                      @Override
-                      public void onClicked(BannerAd ad) {
-                      }
+                              @Override
+                              public void onClicked(BannerAd ad) {
+                              }
 
-                      @Override
-                      public void onFailedToShow(
-                              BannerAd ad, UnityAdsError error) {
-                      }
-                  };
+                              @Override
+                              public void onFailedToShow(
+                                      BannerAd ad, UnityAdsError error) {
+                              }
+                          };
 
                   BannerConfiguration config =
                           new BannerConfiguration.Builder(
                                   BANNER,
                                   new BannerSize(320, 50),
-                                  listener
+                                  showListener
                           ).build();
 
-                  BannerAd.load(config, new LoadListener<BannerAd>() {
-                      @Override
-                      public void onAdLoaded(
-                              BannerAd ad, UnityAdsError error) {
-                          loadingBanner = false;
+                  BannerAd.load(config, (ad, error) ->
+                          handler.post(() -> {
+                              loadingBanner = false;
 
-                          if (error != null || ad == null) {
+                              if (error == null && ad != null) {
+                                  View adView = ad.getView();
+
+                                  if (adView != null) {
+                                      banner = ad;
+                                      bannerContainer.removeAllViews();
+
+                                      if (adView.getParent()
+                                              instanceof ViewGroup) {
+                                          ((ViewGroup) adView.getParent())
+                                                  .removeView(adView);
+                                      }
+
+                                      bannerContainer.addView(
+                                              adView,
+                                              new LinearLayout.LayoutParams(
+                                                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                                                      ViewGroup.LayoutParams.WRAP_CONTENT
+                                              )
+                                      );
+                                      return;
+                                  }
+                              }
+
                               handler.postDelayed(
                                       () -> loadBanner(), 60000L);
-                              return;
-                          }
-
-                          banner = ad;
-                          View bannerView = ad.getView();
-
-                          if (bannerView != null) {
-                              bannerContainer.removeAllViews();
-                              bannerContainer.addView(
-                                      bannerView,
-                                      new LinearLayout.LayoutParams(
-                                              ViewGroup.LayoutParams.MATCH_PARENT,
-                                              ViewGroup.LayoutParams.WRAP_CONTENT
-                                      )
-                              );
-                          } else {
-                              banner = null;
-                              handler.postDelayed(
-                                      () -> loadBanner(), 60000L);
-                          }
-                      }
-                  });
+                          })
+                  );
               }
 
               private void loadInterstitial() {
-                  if (loadingInterstitial || interstitial != null) {
+                  if (loadingInterstitial || interstitial != null
+                          || isFinishing() || isDestroyed()) {
                       return;
                   }
 
@@ -263,29 +269,35 @@ jobs:
                           new LoadConfiguration.Builder(INTERSTITIAL)
                                   .build();
 
-                  InterstitialAd.load(
-                          config,
-                          new LoadListener<InterstitialAd>() {
-                              @Override
-                              public void onAdLoaded(
-                                      InterstitialAd ad,
-                                      UnityAdsError error) {
-                                  loadingInterstitial = false;
+                  InterstitialAd.load(config, (ad, error) ->
+                          handler.post(() -> {
+                              loadingInterstitial = false;
 
-                                  if (error != null || ad == null) {
-                                      handler.postDelayed(
-                                              () -> loadInterstitial(),
-                                              60000L);
-                                  } else {
-                                      interstitial = ad;
-                                  }
+                              if (error == null && ad != null) {
+                                  interstitial = ad;
+
+                                  ad.setOnAdExpired(expiredAd ->
+                                          handler.post(() -> {
+                                              if (interstitial == expiredAd) {
+                                                  interstitial = null;
+                                              }
+                                              loadInterstitial();
+                                          })
+                                  );
+                              } else {
+                                  handler.postDelayed(
+                                          () -> loadInterstitial(), 60000L);
                               }
-                          }
+                          })
                   );
               }
 
               private void afterInterstitial() {
                   handler.post(() -> {
+                      if (isFinishing() || isDestroyed()) {
+                          return;
+                      }
+
                       loadInterstitial();
                       scheduleNextInterstitial();
                   });
@@ -321,6 +333,7 @@ jobs:
               }
           }
           EOF
+                    
           npx cap sync android
           npx @capacitor/assets generate --android
 
