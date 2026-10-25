@@ -69,22 +69,252 @@ jobs:
 
           npx cap add android
           sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
-                    mkdir -p android/app/src/main/java/com/interexive/easy
+                              mkdir -p android/app/src/main/java/com/interexive/easy
           cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'EOF'
           package com.interexive.easy;
 
           import android.os.Bundle;
+          import android.util.Log;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.Button;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.Toast;
+
           import com.getcapacitor.BridgeActivity;
-          import com.unity3d.ads.InitializationConfiguration;
-          import com.unity3d.ads.UnityAds;
+          import com.unity3d.ads.*;
 
           public class MainActivity extends BridgeActivity {
+              private static final String GAME_ID = "800409689";
+              private static final String BANNER = "BP_Banner_Android";
+              private static final String REWARDED = "BP_Rewarded_Android";
+
+              private FrameLayout root;
+              private LinearLayout adPanel;
+              private Button rewardButton;
+              private BannerAd banner;
+              private RewardedAd rewarded;
+              private boolean loadingRewarded = false;
+
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+
+                  root = findViewById(android.R.id.content);
+                  createAdPanel();
+
                   InitializationConfiguration config =
-                      new InitializationConfiguration.Builder("800409689").build();
-                  UnityAds.initialize(config, error -> {});
+                      new InitializationConfiguration.Builder(GAME_ID)
+                          .withTestMode(false)
+                          .build();
+
+                  UnityAds.initialize(config, error -> {
+                      if (error != null) {
+                          Log.e("UnityAds",
+                              "Initialization failed: " + error.getMessage());
+
+                          runOnUiThread(() -> {
+                              rewardButton.setText("Ads unavailable");
+                              rewardButton.setEnabled(false);
+                          });
+                          return;
+                      }
+
+                      runOnUiThread(() -> {
+                          loadBanner();
+                          loadRewarded();
+                      });
+                  });
+              }
+
+              private int dp(int value) {
+                  return (int) (value *
+                      getResources().getDisplayMetrics().density + 0.5f);
+              }
+
+              private void createAdPanel() {
+                  adPanel = new LinearLayout(this);
+                  adPanel.setOrientation(LinearLayout.VERTICAL);
+                  adPanel.setGravity(Gravity.CENTER_HORIZONTAL);
+                  adPanel.setPadding(dp(8), dp(8), dp(8), dp(8));
+
+                  FrameLayout.LayoutParams panelParams =
+                      new FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+
+                  root.addView(adPanel, panelParams);
+
+                  rewardButton = new Button(this);
+                  rewardButton.setText("Loading Rewarded Ad...");
+                  rewardButton.setEnabled(false);
+
+                  LinearLayout.LayoutParams buttonParams =
+                      new LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT);
+
+                  adPanel.addView(rewardButton, buttonParams);
+
+                  rewardButton.setOnClickListener(v -> {
+                      if (rewarded == null) {
+                          Toast.makeText(this, "Ad is loading",
+                              Toast.LENGTH_SHORT).show();
+                          loadRewarded();
+                          return;
+                      }
+
+                      RewardedAd ad = rewarded;
+                      rewarded = null;
+                      rewardButton.setEnabled(false);
+                      rewardButton.setText("Loading next ad...");
+
+                      ad.show(
+                          new ShowConfiguration.Builder().build(),
+                          new RewardedShowListener() {
+                              @Override
+                              public void onStarted(RewardedAd ad) {}
+
+                              @Override
+                              public void onClicked(RewardedAd ad) {}
+
+                              @Override
+                              public void onRewarded(RewardedAd ad) {
+                                  runOnUiThread(() ->
+                                      Toast.makeText(
+                                          MainActivity.this,
+                                          "Reward earned!",
+                                          Toast.LENGTH_LONG).show());
+                              }
+
+                              @Override
+                              public void onCompleted(
+                                  RewardedAd ad, ShowFinishState state) {
+                                  runOnUiThread(() -> loadRewarded());
+                              }
+
+                              @Override
+                              public void onFailed(
+                                  RewardedAd ad, UnityAdsError error) {
+                                  Log.e("UnityAds",
+                                      "Rewarded show failed: "
+                                          + error.getMessage());
+
+                                  runOnUiThread(() -> loadRewarded());
+                              }
+                          }
+                      );
+                  });
+              }
+
+              private void loadBanner() {
+                  BannerShowListener listener = new BannerShowListener() {
+                      @Override
+                      public void onBannerShown(BannerAd ad) {}
+
+                      @Override
+                      public void onBannerClicked(BannerAd ad) {}
+
+                      @Override
+                      public void onBannerFailedToShow(
+                          BannerAd ad, UnityAdsError error) {
+                          Log.e("UnityAds",
+                              "Banner show failed: " + error.getMessage());
+                      }
+                  };
+
+                  BannerLoadConfiguration config =
+                      new BannerLoadConfiguration.Builder(
+                          BANNER, new BannerSize(320, 50))
+                          .withListener(listener)
+                          .build();
+
+                  BannerAd.load(config, (ad, error) -> {
+                      if (ad == null) {
+                          Log.e("UnityAds", "Banner load failed: "
+                              + (error == null
+                                  ? "unknown error"
+                                  : error.getMessage()));
+                          return;
+                      }
+
+                      banner = ad;
+
+                      runOnUiThread(() -> {
+                          if (isFinishing()) return;
+
+                          View bannerView = banner.getView();
+
+                          if (bannerView == null
+                                  || bannerView.getParent() != null) {
+                              return;
+                          }
+
+                          LinearLayout.LayoutParams bannerParams =
+                              new LinearLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.WRAP_CONTENT,
+                                  ViewGroup.LayoutParams.WRAP_CONTENT);
+
+                          bannerParams.gravity = Gravity.CENTER_HORIZONTAL;
+                          bannerParams.topMargin = dp(24);
+
+                          adPanel.addView(bannerView, bannerParams);
+                      });
+                  });
+              }
+
+              private void loadRewarded() {
+                  if (loadingRewarded || rewarded != null || isFinishing()) {
+                      return;
+                  }
+
+                  loadingRewarded = true;
+                  rewardButton.setEnabled(false);
+                  rewardButton.setText("Loading Rewarded Ad...");
+
+                  LoadConfiguration config =
+                      new LoadConfiguration.Builder(REWARDED).build();
+
+                  RewardedAd.load(config, (ad, error) -> {
+                      loadingRewarded = false;
+
+                      if (ad == null) {
+                          Log.e("UnityAds", "Rewarded load failed: "
+                              + (error == null
+                                  ? "unknown error"
+                                  : error.getMessage()));
+
+                          runOnUiThread(() -> {
+                              if (isFinishing()) return;
+                              rewardButton.setText("Retry Rewarded Ad");
+                              rewardButton.setEnabled(true);
+                          });
+                          return;
+                      }
+
+                      rewarded = ad;
+
+                      ad.setOnAdExpired(expired -> {
+                          if (rewarded == expired) {
+                              rewarded = null;
+                          }
+
+                          runOnUiThread(() -> {
+                              if (isFinishing()) return;
+                              rewardButton.setText("Reload Rewarded Ad");
+                              rewardButton.setEnabled(true);
+                          });
+                      });
+
+                      runOnUiThread(() -> {
+                          if (isFinishing()) return;
+                          rewardButton.setText("Watch Rewarded Ad");
+                          rewardButton.setEnabled(true);
+                      });
+                  });
               }
           }
           EOF
