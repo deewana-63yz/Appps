@@ -83,7 +83,7 @@ jobs:
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   InitializationConfiguration config =
-                      new InitializationConfiguration.Builder("YOUR_GAME_ID").build();
+                      new InitializationConfiguration.Builder("800409689").build();
                   UnityAds.initialize(config, error -> {});
               }
           }
