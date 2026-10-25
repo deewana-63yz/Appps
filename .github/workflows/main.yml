@@ -69,8 +69,8 @@ jobs:
 
           npx cap add android
           sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
-                    mkdir -p android/app/src/main/java/com/interexive/easy
-                              cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'EOF'
+                               mkdir -p android/app/src/main/java/com/interexive/easy
+          cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'EOF'
           package com.interexive.easy;
 
           import android.os.Bundle;
@@ -88,6 +88,7 @@ jobs:
 
           public class MainActivity extends BridgeActivity {
 
+              private static final String TAG = "UnityAds";
               private static final String GAME_ID = "800409689";
               private static final String BANNER = "BP_Banner_Android";
               private static final String INTERSTITIAL = "BP_Interstitial_Android";
@@ -101,6 +102,7 @@ jobs:
 
               private boolean loadingBanner = false;
               private boolean loadingInterstitial = false;
+              private boolean interstitialShowing = false;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -120,6 +122,7 @@ jobs:
                           );
 
                   content.addView(bannerContainer, params);
+                  bannerContainer.bringToFront();
 
                   InitializationConfiguration config =
                           new InitializationConfiguration.Builder(GAME_ID)
@@ -129,15 +132,14 @@ jobs:
 
                   UnityAds.initialize(config, error -> {
                       if (error == null) {
-                          Log.d("UnityAds", "Initialization successful");
+                          Log.d(TAG, "Unity Ads initialized");
 
                           handler.post(() -> {
                               loadBanner();
                               loadInterstitial();
                           });
                       } else {
-                          Log.e("UnityAds",
-                                  "Initialization failed: " + error);
+                          Log.e(TAG, "Initialization failed: " + error);
                       }
                   });
               }
@@ -154,18 +156,18 @@ jobs:
                           new BannerShowListener() {
                               @Override
                               public void onImpression(BannerAd ad) {
-                                  Log.d("UnityAds", "Banner impression");
+                                  Log.d(TAG, "Banner impression");
                               }
 
                               @Override
                               public void onClicked(BannerAd ad) {
-                                  Log.d("UnityAds", "Banner clicked");
+                                  Log.d(TAG, "Banner clicked");
                               }
 
                               @Override
                               public void onFailedToShow(
                                       BannerAd ad, UnityAdsError error) {
-                                  Log.e("UnityAds",
+                                  Log.e(TAG,
                                           "Banner show failed: " + error);
                               }
                           };
@@ -183,6 +185,7 @@ jobs:
                               @Override
                               public void onAdLoaded(
                                       BannerAd ad, UnityAdsError error) {
+
                                   handler.post(() -> {
                                       loadingBanner = false;
 
@@ -207,15 +210,14 @@ jobs:
                                                       )
                                               );
 
-                                              Log.d("UnityAds",
-                                                      "Banner loaded successfully");
+                                              bannerContainer.bringToFront();
+                                              Log.d(TAG, "Banner displayed");
                                               return;
                                           }
                                       }
 
-                                      Log.e("UnityAds",
-                                              "Banner load failed: "
-                                                      + String.valueOf(error));
+                                      Log.e(TAG,
+                                              "Banner load failed: " + error);
 
                                       if (!isFinishing() && !isDestroyed()) {
                                           handler.postDelayed(
@@ -248,22 +250,20 @@ jobs:
                               if (error == null && ad != null) {
                                   interstitial = ad;
 
-                                  Log.d("UnityAds",
-                                          "Interstitial loaded successfully");
+                                  Log.d(TAG, "Interstitial loaded");
 
                                   ad.setOnAdExpired(expiredAd ->
                                           handler.post(() -> {
                                               if (interstitial == expiredAd) {
                                                   interstitial = null;
                                               }
-
                                               loadInterstitial();
                                           })
                                   );
+
                               } else {
-                                  Log.e("UnityAds",
-                                          "Interstitial load failed: "
-                                                  + String.valueOf(error));
+                                  Log.e(TAG,
+                                          "Interstitial load failed: " + error);
 
                                   if (!isFinishing() && !isDestroyed()) {
                                       handler.postDelayed(
@@ -276,13 +276,89 @@ jobs:
                   );
               }
 
+              private void showInterstitialBeforeExit() {
+                  InterstitialAd ad = interstitial;
+
+                  if (ad == null || isFinishing() || isDestroyed()) {
+                      super.onBackPressed();
+                      return;
+                  }
+
+                  interstitial = null;
+                  interstitialShowing = true;
+
+                  try {
+                      ad.show(
+                              this,
+                              new ShowConfiguration.Builder().build(),
+                              new InterstitialShowListener() {
+
+                                  @Override
+                                  public void onStarted(InterstitialAd ad) {
+                                      Log.d(TAG, "Interstitial showing");
+                                  }
+
+                                  @Override
+                                  public void onClicked(InterstitialAd ad) {
+                                      Log.d(TAG, "Interstitial clicked");
+                                  }
+
+                                  @Override
+                                  public void onCompleted(
+                                          InterstitialAd ad,
+                                          ShowFinishState state) {
+                                      Log.d(TAG, "Interstitial completed");
+                                      handler.post(() ->
+                                              MainActivity.this.finish());
+                                  }
+
+                                  @Override
+                                  public void onFailed(
+                                          InterstitialAd ad,
+                                          UnityAdsError error) {
+                                      Log.e(TAG,
+                                              "Interstitial show failed: "
+                                                      + error);
+                                      handler.post(() ->
+                                              MainActivity.this.finish());
+                                  }
+                              }
+                      );
+                  } catch (Exception e) {
+                      Log.e(TAG, "Interstitial exception", e);
+                      interstitialShowing = false;
+                      finish();
+                  }
+              }
+
               @Override
-              public void onDestroy() {
+              public void onBackPressed() {
+                  if (interstitialShowing) {
+                      return;
+                  }
+
+                  if (getBridge() != null
+                          && getBridge().getWebView() != null
+                          && getBridge().getWebView().canGoBack()) {
+                      getBridge().getWebView().goBack();
+                      return;
+                  }
+
+                  if (interstitial != null) {
+                      showInterstitialBeforeExit();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
                   handler.removeCallbacksAndMessages(null);
                   super.onDestroy();
               }
           }
           EOF
+
           
           npx cap sync android
           npx @capacitor/assets generate --android
