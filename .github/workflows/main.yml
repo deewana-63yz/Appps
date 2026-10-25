@@ -313,21 +313,21 @@ jobs:
               }
 
               @Override
-              protected void onResume() {
+              public void onResume() {
                   super.onResume();
                   appResumed = true;
                   scheduleNextInterstitial();
               }
 
               @Override
-              protected void onPause() {
+              public void onPause() {
                   appResumed = false;
                   handler.removeCallbacks(interstitialTimer);
                   super.onPause();
               }
 
               @Override
-              protected void onDestroy() {
+              public void onDestroy() {
                   handler.removeCallbacksAndMessages(null);
                   super.onDestroy();
               }
