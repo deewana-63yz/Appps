@@ -71,267 +71,200 @@ jobs:
           sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
                     mkdir -p android/app/src/main/java/com/interexive/easy
           cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'EOF'
-          package com.interexive.easy;
+                            package com.interexive.easy;
 
-          import android.os.Bundle;
-          import android.os.Handler;
-          import android.os.Looper;
-          import android.view.Gravity;
-          import android.view.View;
-          import android.view.ViewGroup;
-          import android.widget.FrameLayout;
-          import android.widget.LinearLayout;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.Log;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 
-          import com.getcapacitor.BridgeActivity;
-          import com.unity3d.ads.*;
+import com.getcapacitor.BridgeActivity;
+import com.unity3d.ads.*;
 
-          public class MainActivity extends BridgeActivity {
+public class MainActivity extends BridgeActivity {
 
-              private static final String GAME_ID = "800409689";
-              private static final String BANNER = "BP_Banner_Android";
-              private static final String INTERSTITIAL = "BP_Interstitial_Android";
-              private static final long AD_INTERVAL = 5 * 60 * 1000L;
+    private static final String GAME_ID = "800409689";
+    private static final String BANNER = "BP_Banner_Android";
+    private static final String INTERSTITIAL = "BP_Interstitial_Android";
 
-              private final Handler handler =
-                      new Handler(Looper.getMainLooper());
+    private final Handler handler =
+            new Handler(Looper.getMainLooper());
 
-              private LinearLayout bannerContainer;
-              private BannerAd banner;
-              private InterstitialAd interstitial;
+    private LinearLayout bannerContainer;
+    private BannerAd banner;
+    private InterstitialAd interstitial;
 
-              private boolean loadingBanner;
-              private boolean loadingInterstitial;
-              private boolean appResumed;
+    private boolean loadingBanner = false;
+    private boolean loadingInterstitial = false;
 
-              private final Runnable interstitialTimer = new Runnable() {
-                  @Override
-                  public void run() {
-                      if (!appResumed || isFinishing() || isDestroyed()) {
-                          return;
-                      }
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
 
-                      if (!hasWindowFocus()) {
-                          handler.postDelayed(this, 30000L);
-                          return;
-                      }
+        FrameLayout content =
+                findViewById(android.R.id.content);
 
-                      if (interstitial == null) {
-                          loadInterstitial();
-                          scheduleNextInterstitial();
-                          return;
-                      }
+        bannerContainer = new LinearLayout(this);
+        bannerContainer.setGravity(Gravity.CENTER);
 
-                      InterstitialAd ad = interstitial;
-                      interstitial = null;
+        FrameLayout.LayoutParams params =
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM
+                );
 
-                      ad.show(
-                              MainActivity.this,
-                              new ShowConfiguration.Builder().build(),
-                              new InterstitialShowListener() {
-                                  @Override
-                                  public void onStarted(InterstitialAd ad) {
-                                  }
+        content.addView(bannerContainer, params);
 
-                                  @Override
-                                  public void onClicked(InterstitialAd ad) {
-                                  }
+        InitializationConfiguration config =
+                new InitializationConfiguration.Builder(GAME_ID)
+                        .withTestMode(false)
+                        .withLogLevel(LogLevel.DEBUG)
+                        .build();
 
-                                  @Override
-                                  public void onCompleted(
-                                          InterstitialAd ad,
-                                          ShowFinishState state) {
-                                      afterInterstitial();
-                                  }
+        UnityAds.initialize(config, error -> {
+            if (error == null) {
+                Log.d("UnityAds", "Initialization successful");
 
-                                  @Override
-                                  public void onFailed(
-                                          InterstitialAd ad,
-                                          UnityAdsError error) {
-                                      afterInterstitial();
-                                  }
-                              }
-                      );
-                  }
-              };
+                handler.post(() -> {
+                    loadBanner();
+                    loadInterstitial();
+                });
+            } else {
+                Log.e("UnityAds",
+                        "Initialization failed: " + error);
+            }
+        });
+    }
 
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
+    private void loadBanner() {
+        if (loadingBanner || banner != null
+                || isFinishing() || isDestroyed()) {
+            return;
+        }
 
-                  FrameLayout content =
-                          findViewById(android.R.id.content);
+        loadingBanner = true;
 
-                  bannerContainer = new LinearLayout(this);
-                  bannerContainer.setGravity(Gravity.CENTER);
+        BannerShowListener showListener =
+                new BannerShowListener() {
+                    @Override
+                    public void onImpression(BannerAd ad) {
+                        Log.d("UnityAds", "Banner impression");
+                    }
 
-                  FrameLayout.LayoutParams params =
-                          new FrameLayout.LayoutParams(
-                                  ViewGroup.LayoutParams.MATCH_PARENT,
-                                  ViewGroup.LayoutParams.WRAP_CONTENT,
-                                  Gravity.BOTTOM
-                          );
+                    @Override
+                    public void onClicked(BannerAd ad) {
+                        Log.d("UnityAds", "Banner clicked");
+                    }
 
-                  content.addView(bannerContainer, params);
+                    @Override
+                    public void onFailedToShow(
+                            BannerAd ad, UnityAdsError error) {
+                        Log.e("UnityAds",
+                                "Banner display failed: " + error);
+                    }
+                };
 
-                  InitializationConfiguration config =
-                          new InitializationConfiguration.Builder(GAME_ID)
-                                  .withTestMode(false)
-                                  .build();
+        BannerConfiguration config =
+                new BannerConfiguration.Builder(
+                        BANNER,
+                        new BannerSize(320, 50),
+                        showListener
+                ).build();
 
-                  UnityAds.initialize(config, new InitializationListener() {
-                      @Override
-                      public void onInitializationComplete(
-                              UnityAdsError error) {
-                          if (error == null) {
-                              handler.post(() -> {
-                                  loadBanner();
-                                  loadInterstitial();
-                              });
-                          }
-                      }
-                  });
-              }
+        BannerAd.load(config, (ad, error) ->
+                handler.post(() -> {
+                    loadingBanner = false;
 
-              private void loadBanner() {
-                  if (loadingBanner || banner != null
-                          || isFinishing() || isDestroyed()) {
-                      return;
-                  }
+                    if (error == null && ad != null) {
+                        View adView = ad.getView();
 
-                  loadingBanner = true;
+                        if (adView != null) {
+                            banner = ad;
+                            bannerContainer.removeAllViews();
 
-                  BannerShowListener showListener =
-                          new BannerShowListener() {
-                              @Override
-                              public void onImpression(BannerAd ad) {
-                              }
+                            if (adView.getParent()
+                                    instanceof ViewGroup) {
+                                ((ViewGroup) adView.getParent())
+                                        .removeView(adView);
+                            }
 
-                              @Override
-                              public void onClicked(BannerAd ad) {
-                              }
+                            bannerContainer.addView(
+                                    adView,
+                                    new LinearLayout.LayoutParams(
+                                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                                            ViewGroup.LayoutParams.WRAP_CONTENT
+                                    )
+                            );
 
-                              @Override
-                              public void onFailedToShow(
-                                      BannerAd ad, UnityAdsError error) {
-                              }
-                          };
+                            Log.d("UnityAds",
+                                    "Banner loaded successfully");
+                            return;
+                        }
+                    }
 
-                  BannerConfiguration config =
-                          new BannerConfiguration.Builder(
-                                  BANNER,
-                                  new BannerSize(320, 50),
-                                  showListener
-                          ).build();
+                    Log.e("UnityAds",
+                            "Banner load failed: " + error);
 
-                  BannerAd.load(config, (ad, error) ->
-                          handler.post(() -> {
-                              loadingBanner = false;
+                    handler.postDelayed(
+                            this::loadBanner, 60000L);
+                })
+        );
+    }
 
-                              if (error == null && ad != null) {
-                                  View adView = ad.getView();
+    private void loadInterstitial() {
+        if (loadingInterstitial || interstitial != null
+                || isFinishing() || isDestroyed()) {
+            return;
+        }
 
-                                  if (adView != null) {
-                                      banner = ad;
-                                      bannerContainer.removeAllViews();
+        loadingInterstitial = true;
 
-                                      if (adView.getParent()
-                                              instanceof ViewGroup) {
-                                          ((ViewGroup) adView.getParent())
-                                                  .removeView(adView);
-                                      }
+        LoadConfiguration config =
+                new LoadConfiguration.Builder(INTERSTITIAL)
+                        .build();
 
-                                      bannerContainer.addView(
-                                              adView,
-                                              new LinearLayout.LayoutParams(
-                                                      ViewGroup.LayoutParams.WRAP_CONTENT,
-                                                      ViewGroup.LayoutParams.WRAP_CONTENT
-                                              )
-                                      );
-                                      return;
-                                  }
-                              }
+        InterstitialAd.load(config, (ad, error) ->
+                handler.post(() -> {
+                    loadingInterstitial = false;
 
-                              handler.postDelayed(
-                                      () -> loadBanner(), 60000L);
-                          })
-                  );
-              }
+                    if (error == null && ad != null) {
+                        interstitial = ad;
 
-              private void loadInterstitial() {
-                  if (loadingInterstitial || interstitial != null
-                          || isFinishing() || isDestroyed()) {
-                      return;
-                  }
+                        Log.d("UnityAds",
+                                "Interstitial loaded successfully");
 
-                  loadingInterstitial = true;
+                        ad.setOnAdExpired(expiredAd ->
+                                handler.post(() -> {
+                                    if (interstitial == expiredAd) {
+                                        interstitial = null;
+                                    }
 
-                  LoadConfiguration config =
-                          new LoadConfiguration.Builder(INTERSTITIAL)
-                                  .build();
+                                    loadInterstitial();
+                                })
+                        );
+                    } else {
+                        Log.e("UnityAds",
+                                "Interstitial load failed: " + error);
 
-                  InterstitialAd.load(config, (ad, error) ->
-                          handler.post(() -> {
-                              loadingInterstitial = false;
+                        handler.postDelayed(
+                                this::loadInterstitial, 60000L);
+                    }
+                })
+        );
+    }
 
-                              if (error == null && ad != null) {
-                                  interstitial = ad;
-
-                                  ad.setOnAdExpired(expiredAd ->
-                                          handler.post(() -> {
-                                              if (interstitial == expiredAd) {
-                                                  interstitial = null;
-                                              }
-                                              loadInterstitial();
-                                          })
-                                  );
-                              } else {
-                                  handler.postDelayed(
-                                          () -> loadInterstitial(), 60000L);
-                              }
-                          })
-                  );
-              }
-
-              private void afterInterstitial() {
-                  handler.post(() -> {
-                      if (isFinishing() || isDestroyed()) {
-                          return;
-                      }
-
-                      loadInterstitial();
-                      scheduleNextInterstitial();
-                  });
-              }
-
-              private void scheduleNextInterstitial() {
-                  handler.removeCallbacks(interstitialTimer);
-
-                  if (appResumed) {
-                      handler.postDelayed(
-                              interstitialTimer, AD_INTERVAL);
-                  }
-              }
-
-              @Override
-              public void onResume() {
-                  super.onResume();
-                  appResumed = true;
-                  scheduleNextInterstitial();
-              }
-
-              @Override
-              public void onPause() {
-                  appResumed = false;
-                  handler.removeCallbacks(interstitialTimer);
-                  super.onPause();
-              }
-
-              @Override
-              public void onDestroy() {
-                  handler.removeCallbacksAndMessages(null);
-                  super.onDestroy();
-              }
-          }
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
+}
           EOF
                     
           npx cap sync android
