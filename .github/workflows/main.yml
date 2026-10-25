@@ -352,7 +352,7 @@ jobs:
               }
 
               @Override
-              protected void onDestroy() {
+              public void onDestroy() {
                   handler.removeCallbacksAndMessages(null);
                   super.onDestroy();
               }
