@@ -70,7 +70,191 @@ jobs:
           npx cap add android
           sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
                     mkdir -p android/app/src/main/java/com/interexive/easy
-          cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'EOF'
+                    cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'EOF'
+          package com.interexive.easy;
+
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.util.Log;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+
+          import com.getcapacitor.BridgeActivity;
+          import com.unity3d.ads.*;
+
+          public class MainActivity extends BridgeActivity {
+
+              private static final String GAME_ID = "800409689";
+              private static final String BANNER = "BP_Banner_Android";
+              private static final String INTERSTITIAL = "BP_Interstitial_Android";
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+
+              private LinearLayout bannerContainer;
+              private BannerAd banner;
+              private InterstitialAd interstitial;
+
+              private boolean loadingBanner = false;
+              private boolean loadingInterstitial = false;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  FrameLayout content = findViewById(android.R.id.content);
+
+                  bannerContainer = new LinearLayout(this);
+                  bannerContainer.setGravity(Gravity.CENTER);
+
+                  FrameLayout.LayoutParams params =
+                          new FrameLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.WRAP_CONTENT,
+                                  Gravity.BOTTOM
+                          );
+
+                  content.addView(bannerContainer, params);
+
+                  InitializationConfiguration config =
+                          new InitializationConfiguration.Builder(GAME_ID)
+                                  .withTestMode(false)
+                                  .withLogLevel(LogLevel.DEBUG)
+                                  .build();
+
+                  UnityAds.initialize(config, error -> {
+                      if (error == null) {
+                          Log.d("UnityAds", "Initialization successful");
+
+                          handler.post(() -> {
+                              loadBanner();
+                              loadInterstitial();
+                          });
+                      } else {
+                          Log.e("UnityAds", "Initialization failed: " + error);
+                      }
+                  });
+              }
+
+              private void loadBanner() {
+                  if (loadingBanner || banner != null
+                          || isFinishing() || isDestroyed()) {
+                      return;
+                  }
+
+                  loadingBanner = true;
+
+                  BannerShowListener showListener = new BannerShowListener() {
+                      @Override
+                      public void onBannerShown(BannerAd ad) {
+                          Log.d("UnityAds", "Banner shown");
+                      }
+
+                      @Override
+                      public void onBannerClicked(BannerAd ad) {
+                          Log.d("UnityAds", "Banner clicked");
+                      }
+
+                      @Override
+                      public void onBannerFailedToShow(
+                              BannerAd ad, UnityAdsError error) {
+                          Log.e("UnityAds", "Banner display failed: " + error);
+                      }
+                  };
+
+                  BannerLoadConfiguration config =
+                          new BannerLoadConfiguration.Builder(
+                                  BANNER, new BannerSize(320, 50))
+                                  .withListener(showListener)
+                                  .build();
+
+                  BannerAd.load(config, (ad, error) ->
+                          handler.post(() -> {
+                              loadingBanner = false;
+
+                              if (ad != null && error == null) {
+                                  View adView = ad.getView();
+
+                                  if (adView != null) {
+                                      banner = ad;
+                                      bannerContainer.removeAllViews();
+
+                                      if (adView.getParent() instanceof ViewGroup) {
+                                          ((ViewGroup) adView.getParent())
+                                                  .removeView(adView);
+                                      }
+
+                                      bannerContainer.addView(
+                                              adView,
+                                              new LinearLayout.LayoutParams(
+                                                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                                                      ViewGroup.LayoutParams.WRAP_CONTENT
+                                              )
+                                      );
+
+                                      Log.d("UnityAds", "Banner loaded successfully");
+                                      return;
+                                  }
+                              }
+
+                              Log.e("UnityAds", "Banner load failed: "
+                                      + String.valueOf(error));
+
+                              handler.postDelayed(this::loadBanner, 60000L);
+                          })
+                  );
+              }
+
+              private void loadInterstitial() {
+                  if (loadingInterstitial || interstitial != null
+                          || isFinishing() || isDestroyed()) {
+                      return;
+                  }
+
+                  loadingInterstitial = true;
+
+                  LoadConfiguration config =
+                          new LoadConfiguration.Builder(INTERSTITIAL).build();
+
+                  InterstitialAd.load(config, (ad, error) ->
+                          handler.post(() -> {
+                              loadingInterstitial = false;
+
+                              if (ad != null && error == null) {
+                                  interstitial = ad;
+
+                                  Log.d("UnityAds",
+                                          "Interstitial loaded successfully");
+
+                                  ad.setOnAdExpired(expiredAd ->
+                                          handler.post(() -> {
+                                              if (interstitial == expiredAd) {
+                                                  interstitial = null;
+                                              }
+                                              loadInterstitial();
+                                          })
+                                  );
+                              } else {
+                                  Log.e("UnityAds", "Interstitial load failed: "
+                                          + String.valueOf(error));
+
+                                  handler.postDelayed(
+                                          this::loadInterstitial, 60000L);
+                              }
+                          })
+                  );
+              }
+
+              @Override
+              protected void onDestroy() {
+                  handler.removeCallbacksAndMessages(null);
+                  super.onDestroy();
+              }
+          }
+          EOF
                             
 
                     
