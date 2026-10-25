@@ -69,7 +69,25 @@ jobs:
 
           npx cap add android
           sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
-          find android/app/src/main -name "MainActivity.java"
+                    mkdir -p android/app/src/main/java/com/interexive/easy
+          cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'EOF'
+          package com.interexive.easy;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+          import com.unity3d.ads.InitializationConfiguration;
+          import com.unity3d.ads.UnityAds;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  InitializationConfiguration config =
+                      new InitializationConfiguration.Builder("YOUR_GAME_ID").build();
+                  UnityAds.initialize(config, error -> {});
+              }
+          }
+          EOF
           npx cap sync android
           npx @capacitor/assets generate --android
 
