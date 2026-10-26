@@ -156,9 +156,9 @@ jobs:
 
           import com.getcapacitor.BridgeActivity;
           import com.unity3d.ads.BannerAd;
-          import com.unity3d.ads.BannerLoadConfiguration;
-          import com.unity3d.ads.BannerLoadListener;
+          import com.unity3d.ads.BannerConfiguration;
           import com.unity3d.ads.BannerShowListener;
+          import com.unity3d.ads.LoadListener;
           import com.unity3d.ads.BannerSize;
           import com.unity3d.ads.InitializationConfiguration;
           import com.unity3d.ads.InterstitialAd;
@@ -243,60 +243,66 @@ jobs:
                   private void loadBanner() {
                       BannerShowListener showListener = new BannerShowListener() {
                           @Override
-                          public void onBannerShown(BannerAd ad) {
-                              Log.d("UnityAds", "Banner shown");
+                          public void onImpression(BannerAd ad) {
+                              Log.d("UnityAds", "Banner impression");
                           }
 
                           @Override
-                          public void onBannerClicked(BannerAd ad) {
+                          public void onClicked(BannerAd ad) {
                               Log.d("UnityAds", "Banner clicked");
                           }
 
                           @Override
-                          public void onBannerFailedToShow(BannerAd ad, UnityAdsError error) {
+                          public void onFailedToShow(BannerAd ad, UnityAdsError error) {
                               Log.e("UnityAds", "Banner failed to show: " + error.getMessage());
                           }
                       };
 
-                      BannerLoadConfiguration config = new BannerLoadConfiguration.Builder(
-                          BANNER_ID, new BannerSize(320, 50)
-                      ).withListener(showListener).build();
+                      BannerConfiguration config = new BannerConfiguration.Builder(
+                          BANNER_ID, new BannerSize(320, 50), showListener
+                      ).build();
 
-                      BannerAd.load(config, (loaded, error) -> {
-                          if (loaded == null || error != null) {
-                              Log.e("UnityAds", "Banner load failed: " +
-                                  (error == null ? "Unknown error" : error.getMessage()));
-                              return;
+                      BannerAd.load(config, new LoadListener<BannerAd>() {
+                          @Override
+                          public void onAdLoaded(BannerAd loaded, UnityAdsError error) {
+                              if (loaded == null || error != null) {
+                                  Log.e("UnityAds", "Banner load failed: " +
+                                      (error == null ? "Unknown error" : error.getMessage()));
+                                  return;
+                              }
+
+                              runOnUiThread(() -> {
+                                  Log.d("UnityAds", "Banner loaded successfully");
+                                  bannerAd = loaded;
+                                  View adView = loaded.getView();
+                                  if (adView == null) {
+                                      Log.e("UnityAds", "Loaded banner returned a null View");
+                                      return;
+                                  }
+
+                                  FrameLayout root = findViewById(android.R.id.content);
+                                  if (bannerSlot != null &&
+                                      bannerSlot.getParent() instanceof ViewGroup) {
+                                      ((ViewGroup) bannerSlot.getParent()).removeView(bannerSlot);
+                                  }
+
+                                  bannerSlot = new FrameLayout(MainActivity.this);
+                                  root.addView(bannerSlot,
+                                      new FrameLayout.LayoutParams(
+                                          ViewGroup.LayoutParams.MATCH_PARENT,
+                                          dp(50), Gravity.BOTTOM));
+
+                                  if (adView.getParent() instanceof ViewGroup) {
+                                      ((ViewGroup) adView.getParent()).removeView(adView);
+                                  }
+
+                                  bannerSlot.addView(adView,
+                                      new FrameLayout.LayoutParams(
+                                          ViewGroup.LayoutParams.WRAP_CONTENT,
+                                          ViewGroup.LayoutParams.MATCH_PARENT,
+                                          Gravity.CENTER));
+                              });
                           }
-
-                          runOnUiThread(() -> {
-                              Log.d("UnityAds", "Banner loaded successfully");
-                              bannerAd = loaded;
-                              View adView = loaded.getView();
-                              if (adView == null) return;
-
-                              FrameLayout root = findViewById(android.R.id.content);
-                              if (bannerSlot != null &&
-                                  bannerSlot.getParent() instanceof ViewGroup) {
-                                  ((ViewGroup) bannerSlot.getParent()).removeView(bannerSlot);
-                              }
-
-                              bannerSlot = new FrameLayout(MainActivity.this);
-                              root.addView(bannerSlot,
-                                  new FrameLayout.LayoutParams(
-                                      ViewGroup.LayoutParams.MATCH_PARENT,
-                                      dp(50), Gravity.BOTTOM));
-
-                              if (adView.getParent() instanceof ViewGroup) {
-                                  ((ViewGroup) adView.getParent()).removeView(adView);
-                              }
-
-                              bannerSlot.addView(adView,
-                                  new FrameLayout.LayoutParams(
-                                      ViewGroup.LayoutParams.WRAP_CONTENT,
-                                      ViewGroup.LayoutParams.MATCH_PARENT,
-                                      Gravity.CENTER));
-                          });
                       });
                   }
 
