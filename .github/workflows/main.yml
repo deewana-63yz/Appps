@@ -12,69 +12,90 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: '22'
 
-      - name: Set up Java
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-          cache: gradle
 
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Prepare HTML and Capacitor project
+      - name: Prepare HTML app
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p www
           if [ -f index.html ]; then
-            cp index.html www/index.html
+            HTML_FILE=index.html
           else
-            mapfile -t html_files < <(find . -maxdepth 1 -type f -iname '*.html' -printf '%f\n' | sort)
-            if [ "${#html_files[@]}" -ne 1 ]; then
-              echo "ERROR: Put index.html in the repository root (recommended), or keep exactly one root-level HTML file."
+            mapfile -t FILES < <(find . -maxdepth 1 -type f -iname '*.html')
+            if [ "${#FILES[@]}" -ne 1 ]; then
+              echo "ERROR: Add one HTML file to the repository root, or name it index.html."
               exit 1
             fi
-            cp "${html_files[0]}" www/index.html
+            HTML_FILE="${FILES[0]}"
           fi
 
-          if [ ! -f package.json ]; then
-            npm init -y
-          fi
-          npm install @capacitor/core@7 @capacitor/android@7
-          npm install --save-dev @capacitor/cli@7
+          mkdir -p www
+          rsync -a --exclude='.git/' --exclude='.github/' --exclude='www/' --exclude='android/' --exclude='node_modules/' --exclude='package.json' --exclude='package-lock.json' --exclude='capacitor.config.json' ./ www/
+          cp "$HTML_FILE" www/index.html
 
-          cat > capacitor.config.json <<'JSON'
+          npm init -y
+          npm install @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+          npm install --save-dev @capacitor/assets
+
+          cat > capacitor.config.json <<'EOF'
           {
             "appId": "com.interexive.easy",
             "appName": "Interexive - Easy",
             "webDir": "www"
           }
-          JSON
+          EOF
+
+          mkdir -p assets
+          test -f logo.png || { echo "ERROR: logo.png missing from repository root"; exit 1; }
+          cp logo.png assets/icon.png
 
           if [ ! -d android ]; then
             npx cap add android
           fi
-          npx cap sync android
 
-      - name: Add Unity Ads SDK and permissions
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gradle_file = Path("android/app/build.gradle")
+          content = gradle_file.read_text()
+          dependency = 'implementation "com.unity3d.ads:unity-ads:4.21.0"'
+
+          if dependency not in content:
+              if "dependencies {" not in content:
+                  raise SystemExit("Could not find dependencies block in app/build.gradle")
+              content = content.replace(
+                  "dependencies {",
+                  "dependencies {\n    " + dependency,
+                  1
+              )
+              gradle_file.write_text(content)
+              print("Unity Ads SDK dependency added.")
+          else:
+              print("Unity Ads SDK dependency already present.")
+          PY
+
+          npx cap sync android
+          npx @capacitor/assets generate --android
+
+      - name: Integrate Unity Ads
         shell: bash
         run: |
           set -euo pipefail
@@ -82,316 +103,338 @@ jobs:
           from pathlib import Path
           import re
 
-          gradle = Path('android/app/build.gradle')
-          if not gradle.exists():
-              raise SystemExit('ERROR: android/app/build.gradle was not generated.')
-          text = gradle.read_text(encoding='utf-8')
-          dependency = 'implementation "com.unity3d.ads:unity-ads:4.21.0"'
-          if dependency not in text:
-              match = re.search(r'(?m)^\s*dependencies\s*\{', text)
-              if not match:
-                  raise SystemExit('ERROR: Could not find dependencies { in android/app/build.gradle.')
-              text = text[:match.end()] + '\n    ' + dependency + text[match.end():]
-              gradle.write_text(text, encoding='utf-8')
+          files = list(Path("android/app/src/main/java").rglob("MainActivity.java"))
+          if len(files) != 1:
+              raise SystemExit(f"Expected one MainActivity.java, found {len(files)}")
 
-          manifest = Path('android/app/src/main/AndroidManifest.xml')
-          text = manifest.read_text(encoding='utf-8')
-          if 'android.permission.INTERNET' not in text:
-              text = re.sub(r'(<manifest\b[^>]*>)', r'\1\n    <uses-permission android:name="android.permission.INTERNET" />', text, count=1)
-              manifest.write_text(text, encoding='utf-8')
-          PY
+          path = files[0]
+          match = re.search(r"^package\s+([\w.]+)\s*;", path.read_text(), re.M)
+          if not match:
+              raise SystemExit("Cannot find Java package declaration")
+          package = match.group(1)
 
-      - name: Integrate Unity Ads into MainActivity (no timer; transition-triggered interstitial)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p android/app/src/main/java/com/interexive/easy
-          cat > android/app/src/main/java/com/interexive/easy/MainActivity.java <<'JAVA'
-          package com.interexive.easy;
+          java = r'''package __PACKAGE__;
 
           import android.os.Bundle;
-          import android.app.AlertDialog;
           import android.util.Log;
           import android.view.Gravity;
           import android.view.View;
           import android.view.ViewGroup;
+          import android.webkit.JavascriptInterface;
           import android.webkit.WebView;
-          import android.widget.Button;
           import android.widget.FrameLayout;
-          import android.widget.Toast;
+          import androidx.annotation.OptIn;
 
           import com.getcapacitor.BridgeActivity;
-          import com.unity3d.ads.*;
+          import com.unity3d.ads.BannerAd;
+          import com.unity3d.ads.BannerConfiguration;
+          import com.unity3d.ads.BannerShowListener;
+          import com.unity3d.ads.BannerSize;
+          import com.unity3d.ads.InitializationConfiguration;
+          import com.unity3d.ads.InterstitialAd;
+          import com.unity3d.ads.InterstitialShowListener;
+          import com.unity3d.ads.LoadConfiguration;
+          import com.unity3d.ads.RewardedAd;
+          import com.unity3d.ads.RewardedShowListener;
+          import com.unity3d.ads.ShowConfiguration;
+          import com.unity3d.ads.ShowFinishState;
+          import com.unity3d.ads.UnityAds;
+          import com.unity3d.ads.UnityAdsError;
+          import com.unity3d.ads.UnityAdsExperimental;
 
+          @OptIn(markerClass = UnityAdsExperimental.class)
           public class MainActivity extends BridgeActivity {
-              private static final String TAG = "InterexiveUnityAds";
-              private static final String GAME_ID = "800409689";
-              private static final String BANNER_ID = "BP_Banner_Android";
-              private static final String INTERSTITIAL_ID = "BP_Interstitial_Android";
-              private static final String REWARDED_ID = "BP_Rewarded_Android";
-              private static final int BANNER_HEIGHT_DP = 50;
-
-              private FrameLayout contentRoot;
-              private WebView webView;
-              private View bannerView;
-              private Button rewardedButton;
-              private BannerAd bannerAd;
-              private InterstitialAd interstitialAd;
-              private RewardedAd rewardedAd;
-              private boolean loadingInterstitial = false;
-              private boolean loadingRewarded = false;
-              private boolean unityReady = false;
-              private boolean adShowing = false;
-              private boolean foreground = false;
-              private boolean resumeInterstitialPending = false;
-
               @Override
-              protected void onCreate(Bundle savedInstanceState) {
+              public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  contentRoot = findViewById(android.R.id.content);
-                  try {
-                      webView = getBridge().getWebView();
-                      if (webView != null) {
-                          webView.setPadding(webView.getPaddingLeft(), webView.getPaddingTop(),
-                                  webView.getPaddingRight(), dp(BANNER_HEIGHT_DP + 56));
-                      }
-                  } catch (Exception e) {
-                      Log.e(TAG, "Could not prepare WebView padding", e);
-                  }
-                  addRewardedOptInButton();
-                  initializeUnityAds();
+                  WebView webView = getBridge().getWebView();
+                  UnityAdsBridge adsBridge = new UnityAdsBridge(webView);
+                  webView.addJavascriptInterface(adsBridge, "UnityAdsBridge");
+                  webView.post(() -> webView.reload());
+                  adsBridge.initialize();
               }
 
-              @Override
-              protected void onResume() {
-                  super.onResume();
-                  foreground = true;
-                  // No repeating timer: show only on a return-to-app transition.
-                  if (resumeInterstitialPending && !adShowing) {
-                      if (interstitialAd != null) {
-                          resumeInterstitialPending = false;
-                          showInterstitialNow();
-                      } else {
+              public final class UnityAdsBridge {
+                  private static final String GAME_ID = "800409689";
+                  private static final String BANNER_ID = "BP_Banner_Android";
+                  private static final String INTERSTITIAL_ID = "BP_Interstitial_Android";
+                  private static final String REWARDED_ID = "BP_Rewarded_Android";
+
+                  private final WebView webView;
+                  private BannerAd bannerAd;
+                  private FrameLayout bannerSlot;
+                  private InterstitialAd interstitialAd;
+                  private RewardedAd rewardedAd;
+                  private boolean interstitialLoading = false;
+                  private boolean rewardedLoading = false;
+
+                  UnityAdsBridge(WebView webView) {
+                      this.webView = webView;
+                  }
+
+                  private boolean isLocalPage() {
+                      String url = webView.getUrl();
+                      return url != null &&
+                          (url.startsWith("https://localhost") ||
+                           url.startsWith("http://localhost") ||
+                           url.startsWith("capacitor://localhost"));
+                  }
+
+                  private int dp(int value) {
+                      return Math.round(value *
+                          getResources().getDisplayMetrics().density);
+                  }
+
+                  private void fireEvent(String name) {
+                      webView.post(() -> webView.evaluateJavascript(
+                          "window.dispatchEvent(new Event('" + name + "'))", null));
+                  }
+
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  void initialize() {
+                      InitializationConfiguration config =
+                          new InitializationConfiguration.Builder(GAME_ID)
+                              .withTestMode(false)
+                              .build();
+
+                      UnityAds.initialize(config, error -> {
+                          if (error != null) {
+                              Log.e("UnityAds", "Initialization failed: " + error.getMessage());
+                              return;
+                          }
+                          Log.d("UnityAds", "Initialization successful");
+                          loadBanner();
                           loadInterstitial();
-                      }
-                  }
-              }
-
-              @Override
-              protected void onPause() {
-                  // Do not treat the ad SDK's own full-screen presentation as an app return.
-                  if (!adShowing) resumeInterstitialPending = true;
-                  foreground = false;
-                  super.onPause();
-              }
-
-              @Override
-              protected void onDestroy() {
-                  super.onDestroy();
-              }
-
-              private int dp(int value) {
-                  return Math.round(value * getResources().getDisplayMetrics().density);
-              }
-
-              private void initializeUnityAds() {
-                  InitializationConfiguration configuration = new InitializationConfiguration.Builder(GAME_ID)
-                          .withTestMode(false)
-                          .build();
-                  UnityAds.initialize(configuration, error -> runOnUiThread(() -> {
-                      if (error != null) {
-                          Log.e(TAG, "Unity Ads initialization failed: " + error.getMessage());
-                          return;
-                      }
-                      unityReady = true;
-                      loadBanner();
-                      loadInterstitial();
-                      loadRewarded();
-                  }));
-              }
-
-              private void loadBanner() {
-                  if (!unityReady || bannerAd != null) return;
-                  BannerShowListener showListener = new BannerShowListener() {
-                      @Override public void onBannerShown(BannerAd ad) { Log.d(TAG, "Banner shown"); }
-                      @Override public void onBannerClicked(BannerAd ad) { Log.d(TAG, "Banner clicked"); }
-                      @Override public void onBannerFailedToShow(BannerAd ad, UnityAdsError error) {
-                          Log.e(TAG, "Banner display failed: " + error.getMessage());
-                      }
-                  };
-                  BannerLoadConfiguration configuration = new BannerLoadConfiguration.Builder(
-                          BANNER_ID, new BannerSize(320, BANNER_HEIGHT_DP))
-                          .withListener(showListener)
-                          .build();
-                  BannerAd.load(configuration, (loadedAd, error) -> runOnUiThread(() -> {
-                      if (loadedAd == null || error != null) {
-                          Log.e(TAG, "Banner load failed: " + (error == null ? "unknown error" : error.getMessage()));
-                          return;
-                      }
-                      bannerAd = loadedAd;
-                      View view = loadedAd.getView();
-                      if (view == null || contentRoot == null) {
-                          Log.e(TAG, "Banner loaded but its View is null");
-                          return;
-                      }
-                      if (view.getParent() instanceof ViewGroup) {
-                          ((ViewGroup) view.getParent()).removeView(view);
-                      }
-                      bannerView = view;
-                      FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                              dp(320), dp(BANNER_HEIGHT_DP), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-                      contentRoot.addView(view, params);
-                  }));
-              }
-
-              private void loadInterstitial() {
-                  if (!unityReady || loadingInterstitial || interstitialAd != null) return;
-                  loadingInterstitial = true;
-                  LoadConfiguration configuration = new LoadConfiguration.Builder(INTERSTITIAL_ID).build();
-                  InterstitialAd.load(configuration, (loadedAd, error) -> runOnUiThread(() -> {
-                      loadingInterstitial = false;
-                      if (loadedAd == null || error != null) {
-                          Log.e(TAG, "Interstitial load failed: " + (error == null ? "unknown error" : error.getMessage()));
-                          return;
-                      }
-                      interstitialAd = loadedAd;
-                      loadedAd.setOnAdExpired(expired -> runOnUiThread(() -> {
-                          if (interstitialAd == expired) interstitialAd = null;
-                          loadInterstitial();
-                      }));
-                      if (resumeInterstitialPending && foreground && !adShowing) {
-                          resumeInterstitialPending = false;
-                          showInterstitialNow();
-                      }
-                  }));
-              }
-
-              private void showInterstitialNow() {
-                  if (!unityReady || adShowing || interstitialAd == null) {
-                      loadInterstitial();
-                      return;
-                  }
-                  resumeInterstitialPending = false;
-                  InterstitialAd ad = interstitialAd;
-                  interstitialAd = null;
-                  adShowing = true;
-                  ad.show(this, new ShowConfiguration.Builder().build(), new InterstitialShowListener() {
-                      @Override public void onStarted(InterstitialAd shownAd) { Log.d(TAG, "Interstitial started"); }
-                      @Override public void onClicked(InterstitialAd shownAd) { Log.d(TAG, "Interstitial clicked"); }
-                      @Override public void onCompleted(InterstitialAd shownAd, ShowFinishState state) {
-                          finishFullScreenAd();
-                      }
-                      @Override public void onFailed(InterstitialAd shownAd, UnityAdsError error) {
-                          Log.e(TAG, "Interstitial show failed: " + error.getMessage());
-                          finishFullScreenAd();
-                      }
-                  });
-              }
-
-              private void loadRewarded() {
-                  if (!unityReady || loadingRewarded || rewardedAd != null) return;
-                  loadingRewarded = true;
-                  LoadConfiguration configuration = new LoadConfiguration.Builder(REWARDED_ID).build();
-                  RewardedAd.load(configuration, (loadedAd, error) -> runOnUiThread(() -> {
-                      loadingRewarded = false;
-                      if (loadedAd == null || error != null) {
-                          Log.e(TAG, "Rewarded load failed: " + (error == null ? "unknown error" : error.getMessage()));
-                          return;
-                      }
-                      rewardedAd = loadedAd;
-                      loadedAd.setOnAdExpired(expired -> runOnUiThread(() -> {
-                          if (rewardedAd == expired) rewardedAd = null;
                           loadRewarded();
-                      }));
-                      if (rewardedButton != null) {
-                          rewardedButton.setEnabled(true);
-                          rewardedButton.setText("Play Games");
-                      }
-                  }));
-              }
-
-              private void addRewardedOptInButton() {
-                  if (contentRoot == null) return;
-                  rewardedButton = new Button(this);
-                  rewardedButton.setText("Play Games");
-                  rewardedButton.setTextSize(12f);
-                  rewardedButton.setAllCaps(false);
-                  rewardedButton.setEnabled(false);
-                  rewardedButton.setOnClickListener(v -> confirmPlayGamesWithRewardedAd());
-                  FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
-                          ViewGroup.LayoutParams.WRAP_CONTENT, dp(44), Gravity.BOTTOM | Gravity.END);
-                  params.bottomMargin = dp(BANNER_HEIGHT_DP + 8);
-                  params.rightMargin = dp(8);
-                  contentRoot.addView(rewardedButton, params);
-              }
-
-              private void confirmPlayGamesWithRewardedAd() {
-                  new AlertDialog.Builder(this)
-                          .setTitle("Play Games")
-                          .setMessage("A rewarded ad may play before continuing. Do you want to watch it?")
-                          .setNegativeButton("Cancel", (dialog, which) -> dialog.dismiss())
-                          .setPositiveButton("Watch Ad", (dialog, which) -> showRewardedByChoice())
-                          .show();
-              }
-
-              private void showRewardedByChoice() {
-                  if (!unityReady || adShowing) return;
-                  if (rewardedAd == null) {
-                      Toast.makeText(this, "Rewarded ad is loading. Please try again shortly.", Toast.LENGTH_SHORT).show();
-                      loadRewarded();
-                      return;
+                      });
                   }
-                  RewardedAd ad = rewardedAd;
-                  rewardedAd = null;
-                  adShowing = true;
-                  if (rewardedButton != null) rewardedButton.setEnabled(false);
-                  ad.show(this, new ShowConfiguration.Builder().withCustomRewardString("interexive_reward").build(),
-                          new RewardedShowListener() {
-                              @Override public void onStarted(RewardedAd shownAd) { Log.d(TAG, "Rewarded ad started"); }
-                              @Override public void onClicked(RewardedAd shownAd) { Log.d(TAG, "Rewarded ad clicked"); }
-                              @Override public void onRewarded(RewardedAd shownAd) {
-                                  runOnUiThread(() -> {
-                                      Toast.makeText(MainActivity.this, "Reward earned!", Toast.LENGTH_SHORT).show();
-                                      // Let the app HTML start its game flow if it defines window.playGames(),
-                                      // or listen for the custom event below.
-                                      if (webView != null) {
-                                          webView.evaluateJavascript("(function(){if(typeof window.playGames==='function'){window.playGames();}else{window.dispatchEvent(new CustomEvent('interexive:play-games-unlocked'));}})();", null);
-                                      }
-                                  });
-                              }
-                              @Override public void onCompleted(RewardedAd shownAd, ShowFinishState state) {
-                                  finishFullScreenAd();
-                              }
-                              @Override public void onFailed(RewardedAd shownAd, UnityAdsError error) {
-                                  Log.e(TAG, "Rewarded show failed: " + error.getMessage());
-                                  finishFullScreenAd();
-                              }
-                          });
-              }
 
-              private void finishFullScreenAd() {
-                  runOnUiThread(() -> {
-                      adShowing = false;
-                      if (rewardedButton != null) rewardedButton.setEnabled(rewardedAd != null);
-                      loadInterstitial();
-                      loadRewarded();
-                  });
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  private void loadBanner() {
+                      BannerShowListener showListener = new BannerShowListener() {
+                          @Override
+                          public void onImpression(BannerAd ad) {}
+
+                          @Override
+                          public void onClicked(BannerAd ad) {}
+
+                          @Override
+                          public void onFailedToShow(BannerAd ad, UnityAdsError error) {
+                              Log.e("UnityAds", "Banner failed to show: " + error.getMessage());
+                          }
+                      };
+
+                      BannerConfiguration config = new BannerConfiguration.Builder(
+                          BANNER_ID, new BannerSize(320, 50), showListener
+                      ).build();
+
+                      BannerAd.load(config, (loaded, error) -> {
+                          if (loaded == null || error != null) {
+                              Log.e("UnityAds", "Banner load failed: " +
+                                  (error == null ? "Unknown error" : error.getMessage()));
+                              return;
+                          }
+
+                          runOnUiThread(() -> {
+                              bannerAd = loaded;
+                              View adView = loaded.getView();
+                              if (adView == null) return;
+
+                              FrameLayout root = findViewById(android.R.id.content);
+                              if (bannerSlot != null &&
+                                  bannerSlot.getParent() instanceof ViewGroup) {
+                                  ((ViewGroup) bannerSlot.getParent()).removeView(bannerSlot);
+                              }
+
+                              bannerSlot = new FrameLayout(MainActivity.this);
+                              root.addView(bannerSlot,
+                                  new FrameLayout.LayoutParams(
+                                      ViewGroup.LayoutParams.MATCH_PARENT,
+                                      dp(50), Gravity.BOTTOM));
+
+                              if (adView.getParent() instanceof ViewGroup) {
+                                  ((ViewGroup) adView.getParent()).removeView(adView);
+                              }
+
+                              bannerSlot.addView(adView,
+                                  new FrameLayout.LayoutParams(
+                                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                                      ViewGroup.LayoutParams.MATCH_PARENT,
+                                      Gravity.CENTER));
+                          });
+                      });
+                  }
+
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  private void loadInterstitial() {
+                      if (interstitialLoading || interstitialAd != null) return;
+                      interstitialLoading = true;
+
+                      InterstitialAd.load(
+                          new LoadConfiguration.Builder(INTERSTITIAL_ID).build(),
+                          (loaded, error) -> runOnUiThread(() -> {
+                              interstitialLoading = false;
+                              if (loaded == null || error != null) {
+                                  Log.e("UnityAds", "Interstitial load failed: " +
+                                      (error == null ? "Unknown error" : error.getMessage()));
+                                  return;
+                              }
+                              interstitialAd = loaded;
+                              loaded.setOnAdExpired(expired -> runOnUiThread(() -> {
+                                  interstitialAd = null;
+                                  loadInterstitial();
+                              }));
+                          })
+                      );
+                  }
+
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  private void loadRewarded() {
+                      if (rewardedLoading || rewardedAd != null) return;
+                      rewardedLoading = true;
+
+                      RewardedAd.load(
+                          new LoadConfiguration.Builder(REWARDED_ID).build(),
+                          (loaded, error) -> runOnUiThread(() -> {
+                              rewardedLoading = false;
+                              if (loaded == null || error != null) {
+                                  Log.e("UnityAds", "Rewarded load failed: " +
+                                      (error == null ? "Unknown error" : error.getMessage()));
+                                  return;
+                              }
+                              rewardedAd = loaded;
+                              loaded.setOnAdExpired(expired -> runOnUiThread(() -> {
+                                  rewardedAd = null;
+                                  loadRewarded();
+                              }));
+                          })
+                      );
+                  }
+
+                  @JavascriptInterface
+                  public void showInterstitial() {
+                      runOnUiThread(() -> {
+                          if (!isLocalPage()) return;
+                          if (interstitialAd == null) {
+                              fireEvent("unityAdNotReady");
+                              loadInterstitial();
+                              return;
+                          }
+
+                          InterstitialAd ad = interstitialAd;
+                          interstitialAd = null;
+                          ad.show(MainActivity.this,
+                              new ShowConfiguration.Builder().build(),
+                              new InterstitialShowListener() {
+                                  @Override public void onStarted(InterstitialAd ad) {}
+                                  @Override public void onClicked(InterstitialAd ad) {}
+                                  @Override public void onCompleted(InterstitialAd ad, ShowFinishState state) {
+                                      loadInterstitial();
+                                  }
+                                  @Override public void onFailed(InterstitialAd ad, UnityAdsError error) {
+                                      Log.e("UnityAds", "Interstitial show failed: " + error.getMessage());
+                                      loadInterstitial();
+                                  }
+                              });
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void showRewarded() {
+                      runOnUiThread(() -> {
+                          if (!isLocalPage()) return;
+                          if (rewardedAd == null) {
+                              fireEvent("unityAdNotReady");
+                              loadRewarded();
+                              return;
+                          }
+
+                          RewardedAd ad = rewardedAd;
+                          rewardedAd = null;
+                          ad.show(MainActivity.this,
+                              new ShowConfiguration.Builder().build(),
+                              new RewardedShowListener() {
+                                  @Override public void onStarted(RewardedAd ad) {}
+                                  @Override public void onClicked(RewardedAd ad) {}
+                                  @Override public void onCompleted(RewardedAd ad, ShowFinishState state) {
+                                      loadRewarded();
+                                  }
+                                  @Override public void onFailed(RewardedAd ad, UnityAdsError error) {
+                                      Log.e("UnityAds", "Rewarded show failed: " + error.getMessage());
+                                      loadRewarded();
+                                  }
+                                  @Override public void onRewarded(RewardedAd ad) {
+                                      fireEvent("unityRewardEarned");
+                                  }
+                              });
+                      });
+                  }
               }
           }
-          JAVA
+          '''
 
-      - name: Build debug APK
-        shell: bash
+          path.write_text(java.replace("__PACKAGE__", package))
+
+          html_path = Path("www/index.html")
+          html = html_path.read_text()
+          marker = "<!-- UNITY_ADS_CONTROL_PANEL -->"
+          addon = r'''
+          <!-- UNITY_ADS_CONTROL_PANEL -->
+          <style>
+            body { padding-bottom: 72px !important; }
+            #unity-ads-controls {
+              position: fixed; right: 8px; bottom: 58px;
+              z-index: 2147483647; display: flex; gap: 6px;
+            }
+            #unity-ads-controls button {
+              padding: 7px 10px; border: 1px solid #ccc;
+              border-radius: 18px; background: white; color: #222;
+              font-size: 12px;
+            }
+          </style>
+          <div id="unity-ads-controls">
+            <button type="button" id="unity-reward-btn">Reward Ad</button>
+            <button type="button" id="unity-interstitial-btn">Full-screen Ad</button>
+          </div>
+          <script>
+          (function () {
+            document.getElementById("unity-reward-btn").onclick = function () {
+              if (window.UnityAdsBridge) window.UnityAdsBridge.showRewarded();
+            };
+            document.getElementById("unity-interstitial-btn").onclick = function () {
+              if (window.UnityAdsBridge) window.UnityAdsBridge.showInterstitial();
+            };
+            window.addEventListener("unityAdNotReady", function () {
+              alert("Ad is loading. Please try again in a few seconds.");
+            });
+            window.addEventListener("unityRewardEarned", function () {
+              alert("Rewarded ad completed.");
+            });
+          })();
+          </script>
+          '''
+
+          if marker not in html:
+              if re.search(r"</body\s*>", html, re.I):
+                  html = re.sub(r"</body\s*>", addon + "\n</body>", html,
+                                count=1, flags=re.I)
+              else:
+                  html += addon
+              html_path.write_text(html)
+
+          print("Unity Ads integration generated.")
+          PY
+
+          npx cap copy android
+
+      - name: Build APK
         run: |
-          set -euo pipefail
-          npx cap sync android
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Interexive-Easy-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
