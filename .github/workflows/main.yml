@@ -74,6 +74,130 @@ jobs:
           npx cap sync android
           npx @capacitor/assets generate --android
 
+                - name: Initialize Unity Ads
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          files = list(
+              Path("android/app/src/main/java").rglob("MainActivity.java")
+          )
+
+          if len(files) != 1:
+              raise SystemExit(
+                  f"Expected one MainActivity.java, found {len(files)}"
+              )
+
+          path = files[0]
+          source = path.read_text()
+
+          if "UnityAds.initialize(config, listener);" in source:
+              print("Unity Ads initialization already exists.")
+              raise SystemExit(0)
+
+          imports = [
+              "import androidx.annotation.OptIn;",
+              "import com.unity3d.ads.InitializationConfiguration;",
+              "import com.unity3d.ads.InitializationListener;",
+              "import com.unity3d.ads.UnityAds;",
+              "import com.unity3d.ads.UnityAdsExperimental;",
+          ]
+
+          package = re.search(
+              r"^package\s+[\w.]+;", source, re.M
+          )
+
+          if not package:
+              raise SystemExit("Java package declaration not found.")
+
+          missing = [item for item in imports if item not in source]
+
+          source = (
+              source[:package.end()]
+              + "\n\n"
+              + "\n".join(missing)
+              + source[package.end():]
+          )
+
+          init_code = '''
+                  InitializationConfiguration config =
+                      new InitializationConfiguration.Builder("800409689")
+                          .withTestMode(false)
+                          .build();
+
+                  InitializationListener listener = error -> {
+                      if (error == null) {
+                          android.util.Log.d("UnityAds", "Initialization successful");
+                      } else {
+                          android.util.Log.e(
+                              "UnityAds", "Initialization failed: " + error.getMessage()
+                          );
+                      }
+                  };
+
+                  UnityAds.initialize(config, listener);
+          '''
+
+          method = re.search(
+              r'public\s+void\s+onCreate\s*\(\s*(?:(?:android\.os\.)?Bundle)\s+\w+\s*\)\s*\{',
+              source
+          )
+
+          if method:
+              after = re.search(
+                  r'super\.onCreate\s*\(\s*\w+\s*\)\s*;',
+                  source[method.end():]
+              )
+
+              if not after:
+                  raise SystemExit("Could not locate super.onCreate().")
+
+              pos = method.end() + after.end()
+              source = source[:pos] + "\n" + init_code + source[pos:]
+
+              method = re.search(
+                  r'public\s+void\s+onCreate\s*\(\s*(?:(?:android\.os\.)?Bundle)\s+\w+\s*\)\s*\{',
+                  source
+              )
+
+              line_start = source.rfind("\n", 0, method.start()) + 1
+
+              if "@OptIn(markerClass = UnityAdsExperimental.class)" not in source[max(0, method.start()-160):method.start()]:
+                  source = (
+                      source[:line_start]
+                      + "    @OptIn(markerClass = UnityAdsExperimental.class)\n"
+                      + source[line_start:]
+                  )
+          else:
+              activity = re.search(
+                  r'(class\s+MainActivity\s+extends\s+BridgeActivity\s*\{)',
+                  source
+              )
+
+              if not activity:
+                  raise SystemExit("Could not locate MainActivity class.")
+
+              new_method = '''
+              @OptIn(markerClass = UnityAdsExperimental.class)
+              @Override
+              public void onCreate(android.os.Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+          ''' + init_code + '''
+              }
+          '''
+
+              source = (
+                  source[:activity.end()]
+                  + "\n"
+                  + new_method
+                  + source[activity.end():]
+              )
+
+          path.write_text(source)
+          print("Unity Ads initialization added.")
+          PY
+
       - name: Build APK
         run: |
           cd android
