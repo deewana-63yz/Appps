@@ -1,3 +1,4 @@
+
 name: Build Interexive - Easy APK
 
 on:
@@ -64,25 +65,27 @@ jobs:
           EOF
 
           mkdir -p assets
-          test -f logo.png || { echo "ERROR: logo.png missing from repository root"; exit 1; }
+          test -f logo.png || { echo "ERROR: logo.png missing"; exit 1; }
           cp logo.png assets/icon.png
 
-          npx cap add android
+          if [ ! -d android ]; then
+            npx cap add android
+          fi
+
           sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
-                               
-          
+
           npx cap sync android
           npx @capacitor/assets generate --android
-          
-                - name: Initialize Unity Ads
+
+      - name: Initialize Unity Ads
+        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
+          import textwrap
 
-          files = list(
-              Path("android/app/src/main/java").rglob("MainActivity.java")
-          )
+          files = list(Path("android/app/src/main/java").rglob("MainActivity.java"))
 
           if len(files) != 1:
               raise SystemExit(
@@ -96,103 +99,85 @@ jobs:
               print("Unity Ads initialization already exists.")
               raise SystemExit(0)
 
-          imports = [
-              "import androidx.annotation.OptIn;",
-              "import com.unity3d.ads.InitializationConfiguration;",
-              "import com.unity3d.ads.InitializationListener;",
-              "import com.unity3d.ads.UnityAds;",
-              "import com.unity3d.ads.UnityAdsExperimental;",
-          ]
-
-          package = re.search(
-              r"^package\s+[\w.]+;", source, re.M
-          )
-
+          package = re.search(r"^package\s+[\w.]+;", source, re.M)
           if not package:
               raise SystemExit("Java package declaration not found.")
 
+          imports = [
+              "import com.unity3d.ads.InitializationConfiguration;",
+              "import com.unity3d.ads.InitializationListener;",
+              "import com.unity3d.ads.UnityAds;",
+          ]
+
           missing = [item for item in imports if item not in source]
+          if missing:
+              source = (
+                  source[:package.end()]
+                  + "\n\n"
+                  + "\n".join(missing)
+                  + source[package.end():]
+              )
 
-          source = (
-              source[:package.end()]
-              + "\n\n"
-              + "\n".join(missing)
-              + source[package.end():]
-          )
+          init_code = textwrap.dedent("""\
+              InitializationConfiguration config =
+                  new InitializationConfiguration.Builder("800409689")
+                      .withTestMode(false)
+                      .build();
 
-          init_code = '''
-                  InitializationConfiguration config =
-                      new InitializationConfiguration.Builder("800409689")
-                          .withTestMode(false)
-                          .build();
+              InitializationListener listener = error -> {
+                  if (error == null) {
+                      android.util.Log.d(
+                          "UnityAds", "Initialization successful"
+                      );
+                  } else {
+                      android.util.Log.e(
+                          "UnityAds",
+                          "Initialization failed: " + error.getMessage()
+                      );
+                  }
+              };
 
-                  InitializationListener listener = error -> {
-                      if (error == null) {
-                          android.util.Log.d("UnityAds", "Initialization successful");
-                      } else {
-                          android.util.Log.e(
-                              "UnityAds", "Initialization failed: " + error.getMessage()
-                          );
-                      }
-                  };
+              UnityAds.initialize(config, listener);
+          """).rstrip()
 
-                  UnityAds.initialize(config, listener);
-          '''
+          init_code = textwrap.indent(init_code, "        ")
 
           method = re.search(
-              r'public\s+void\s+onCreate\s*\(\s*(?:(?:android\.os\.)?Bundle)\s+\w+\s*\)\s*\{',
+              r"public\s+void\s+onCreate\s*\(\s*(?:(?:android\.os\.)?Bundle)\s+\w+\s*\)\s*\{",
               source
           )
 
           if method:
               after = re.search(
-                  r'super\.onCreate\s*\(\s*\w+\s*\)\s*;',
+                  r"super\.onCreate\s*\(\s*\w+\s*\)\s*;",
                   source[method.end():]
               )
-
               if not after:
                   raise SystemExit("Could not locate super.onCreate().")
 
               pos = method.end() + after.end()
               source = source[:pos] + "\n" + init_code + source[pos:]
-
-              method = re.search(
-                  r'public\s+void\s+onCreate\s*\(\s*(?:(?:android\.os\.)?Bundle)\s+\w+\s*\)\s*\{',
-                  source
-              )
-
-              line_start = source.rfind("\n", 0, method.start()) + 1
-
-              if "@OptIn(markerClass = UnityAdsExperimental.class)" not in source[max(0, method.start()-160):method.start()]:
-                  source = (
-                      source[:line_start]
-                      + "    @OptIn(markerClass = UnityAdsExperimental.class)\n"
-                      + source[line_start:]
-                  )
           else:
               activity = re.search(
-                  r'(class\s+MainActivity\s+extends\s+BridgeActivity\s*\{)',
+                  r"public\s+class\s+MainActivity\s+extends\s+BridgeActivity\s*\{",
                   source
               )
-
               if not activity:
                   raise SystemExit("Could not locate MainActivity class.")
 
-              new_method = '''
-              @OptIn(markerClass = UnityAdsExperimental.class)
-              @Override
-              public void onCreate(android.os.Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-          ''' + init_code + '''
-              }
-          '''
-
-              source = (
-                  source[:activity.end()]
-                  + "\n"
-                  + new_method
-                  + source[activity.end():]
+              new_method = (
+                  "\n    @Override\n"
+                  "    public void onCreate(android.os.Bundle savedInstanceState) {\n"
+                  "        super.onCreate(savedInstanceState);\n"
+                  + init_code + "\n"
+                  "    }\n"
               )
+
+              pos = source.rfind("}")
+              if pos < activity.end():
+                  raise SystemExit("Could not locate class closing brace.")
+
+              source = source[:pos] + new_method + source[pos:]
 
           path.write_text(source)
           print("Unity Ads initialization added.")
