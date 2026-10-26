@@ -393,7 +393,7 @@ jobs:
             }
           </style>
           <div id="unity-ads-controls">
-            <button type="button" id="unity-reward-btn">Reward Ad</button>
+            <button type="button" id="unity-reward-btn">Play games</button>
             <button type="button" id="unity-interstitial-btn">Full-screen Ad</button>
           </div>
           <script>
