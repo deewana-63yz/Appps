@@ -76,113 +76,370 @@ jobs:
 
           npx cap sync android
           npx @capacitor/assets generate --android
-
-      - name: Initialize Unity Ads
+      - name: Integrate Unity Ads
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
-          import textwrap
 
-          files = list(Path("android/app/src/main/java").rglob("MainActivity.java"))
-
+          files = list(
+              Path("android/app/src/main/java").rglob("MainActivity.java")
+          )
           if len(files) != 1:
               raise SystemExit(
                   f"Expected one MainActivity.java, found {len(files)}"
               )
 
           path = files[0]
-          source = path.read_text()
+          match = re.search(
+              r"^package\s+([\w.]+)\s*;", path.read_text(), re.M
+          )
+          if not match:
+              raise SystemExit("Cannot find Java package")
 
-          if "UnityAds.initialize(config, listener);" in source:
-              print("Unity Ads initialization already exists.")
-              raise SystemExit(0)
+          package = match.group(1)
 
-          package = re.search(r"^package\s+[\w.]+;", source, re.M)
-          if not package:
-              raise SystemExit("Java package declaration not found.")
+          java = r'''package __PACKAGE__;
 
-          imports = [
-              "import com.unity3d.ads.InitializationConfiguration;",
-              "import com.unity3d.ads.InitializationListener;",
-              "import com.unity3d.ads.UnityAds;",
-          ]
+          import android.os.Bundle;
+          import android.util.Log;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
+          import android.widget.FrameLayout;
+          import androidx.annotation.OptIn;
 
-          missing = [item for item in imports if item not in source]
-          if missing:
-              source = (
-                  source[:package.end()]
-                  + "\n\n"
-                  + "\n".join(missing)
-                  + source[package.end():]
-              )
+          import com.getcapacitor.BridgeActivity;
+          import com.unity3d.ads.BannerAd;
+          import com.unity3d.ads.BannerLoadConfiguration;
+          import com.unity3d.ads.BannerSize;
+          import com.unity3d.ads.InitializationConfiguration;
+          import com.unity3d.ads.InterstitialAd;
+          import com.unity3d.ads.InterstitialLoadListener;
+          import com.unity3d.ads.InterstitialShowListener;
+          import com.unity3d.ads.LoadConfiguration;
+          import com.unity3d.ads.RewardedAd;
+          import com.unity3d.ads.RewardedLoadListener;
+          import com.unity3d.ads.RewardedShowListener;
+          import com.unity3d.ads.ShowConfiguration;
+          import com.unity3d.ads.ShowFinishState;
+          import com.unity3d.ads.UnityAds;
+          import com.unity3d.ads.UnityAdsError;
+          import com.unity3d.ads.UnityAdsExperimental;
 
-          init_code = textwrap.dedent("""\
-              InitializationConfiguration config =
-                  new InitializationConfiguration.Builder("800409689")
-                      .withTestMode(false)
-                      .build();
+          @OptIn(markerClass = UnityAdsExperimental.class)
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  WebView webView = getBridge().getWebView();
+                  UnityAdsBridge ads = new UnityAdsBridge(webView);
+                  webView.addJavascriptInterface(ads, "UnityAdsBridge");
+                  webView.post(() -> webView.reload());
+                  ads.initialize();
+              }
 
-              InitializationListener listener = error -> {
-                  if (error == null) {
-                      android.util.Log.d(
-                          "UnityAds", "Initialization successful"
-                      );
-                  } else {
-                      android.util.Log.e(
-                          "UnityAds",
-                          "Initialization failed: " + error.getMessage()
+              public final class UnityAdsBridge {
+                  private static final String GAME_ID = "800409689";
+                  private static final String BANNER_ID = "BP_Banner_Android";
+                  private static final String INTERSTITIAL_ID = "BP_Interstitial_Android";
+                  private static final String REWARDED_ID = "BP_Rewarded_Android";
+
+                  private final WebView webView;
+                  private BannerAd bannerAd;
+                  private FrameLayout bannerSlot;
+                  private InterstitialAd interstitialAd;
+                  private RewardedAd rewardedAd;
+                  private boolean interstitialLoading = false;
+                  private boolean rewardedLoading = false;
+
+                  UnityAdsBridge(WebView webView) {
+                      this.webView = webView;
+                  }
+
+                  private boolean isLocalPage() {
+                      String url = webView.getUrl();
+                      return url != null &&
+                          (url.startsWith("https://localhost") ||
+                           url.startsWith("http://localhost") ||
+                           url.startsWith("capacitor://localhost"));
+                  }
+
+                  private int dp(int value) {
+                      return Math.round(value *
+                          getResources().getDisplayMetrics().density);
+                  }
+
+                  private void fireEvent(String name) {
+                      webView.post(() -> webView.evaluateJavascript(
+                          "window.dispatchEvent(new Event('" + name + "'))",
+                          null
+                      ));
+                  }
+
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  void initialize() {
+                      InitializationConfiguration config =
+                          new InitializationConfiguration.Builder(GAME_ID)
+                              .withTestMode(false)
+                              .build();
+
+                      UnityAds.initialize(config, error -> {
+                          if (error != null) {
+                              Log.e("UnityAds",
+                                  "Initialization failed: " + error.getMessage());
+                              return;
+                          }
+                          Log.d("UnityAds", "Initialization successful");
+                          loadBanner();
+                          loadInterstitial();
+                          loadRewarded();
+                      });
+                  }
+
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  private void loadBanner() {
+                      BannerLoadConfiguration config =
+                          new BannerLoadConfiguration.Builder(
+                              BANNER_ID, new BannerSize(320, 50)
+                          ).build();
+
+                      BannerAd.load(config, (loaded, error) -> {
+                          if (loaded == null) {
+                              Log.e("UnityAds", "Banner load failed: " +
+                                  (error == null ? "Unknown error" : error.getMessage()));
+                              return;
+                          }
+
+                          runOnUiThread(() -> {
+                              bannerAd = loaded;
+                              View adView = loaded.getView();
+                              if (adView == null) return;
+
+                              FrameLayout root =
+                                  (FrameLayout) findViewById(android.R.id.content);
+
+                              if (bannerSlot != null &&
+                                  bannerSlot.getParent() instanceof ViewGroup) {
+                                  ((ViewGroup) bannerSlot.getParent())
+                                      .removeView(bannerSlot);
+                              }
+
+                              bannerSlot = new FrameLayout(MainActivity.this);
+                              root.addView(bannerSlot,
+                                  new FrameLayout.LayoutParams(
+                                      ViewGroup.LayoutParams.MATCH_PARENT,
+                                      dp(50), Gravity.BOTTOM));
+
+                              if (adView.getParent() instanceof ViewGroup) {
+                                  ((ViewGroup) adView.getParent())
+                                      .removeView(adView);
+                              }
+
+                              bannerSlot.addView(adView,
+                                  new FrameLayout.LayoutParams(
+                                      ViewGroup.LayoutParams.WRAP_CONTENT,
+                                      ViewGroup.LayoutParams.MATCH_PARENT,
+                                      Gravity.CENTER));
+                          });
+                      });
+                  }
+
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  private void loadInterstitial() {
+                      if (interstitialLoading || interstitialAd != null) return;
+                      interstitialLoading = true;
+
+                      InterstitialAd.load(
+                          new LoadConfiguration.Builder(INTERSTITIAL_ID).build(),
+                          (loaded, error) -> runOnUiThread(() -> {
+                              interstitialLoading = false;
+                              if (loaded == null) {
+                                  Log.e("UnityAds", "Interstitial load failed: " +
+                                      (error == null ? "Unknown error" : error.getMessage()));
+                                  return;
+                              }
+                              interstitialAd = loaded;
+                              loaded.setOnAdExpired(expired -> {
+                                  runOnUiThread(() -> {
+                                      interstitialAd = null;
+                                      loadInterstitial();
+                                  });
+                              });
+                          })
                       );
                   }
-              };
 
-              UnityAds.initialize(config, listener);
-          """).rstrip()
+                  @OptIn(markerClass = UnityAdsExperimental.class)
+                  private void loadRewarded() {
+                      if (rewardedLoading || rewardedAd != null) return;
+                      rewardedLoading = true;
 
-          init_code = textwrap.indent(init_code, "        ")
+                      RewardedAd.load(
+                          new LoadConfiguration.Builder(REWARDED_ID).build(),
+                          (loaded, error) -> runOnUiThread(() -> {
+                              rewardedLoading = false;
+                              if (loaded == null) {
+                                  Log.e("UnityAds", "Rewarded load failed: " +
+                                      (error == null ? "Unknown error" : error.getMessage()));
+                                  return;
+                              }
+                              rewardedAd = loaded;
+                              loaded.setOnAdExpired(expired -> {
+                                  runOnUiThread(() -> {
+                                      rewardedAd = null;
+                                      loadRewarded();
+                                  });
+                              });
+                          })
+                      );
+                  }
 
-          method = re.search(
-              r"public\s+void\s+onCreate\s*\(\s*(?:(?:android\.os\.)?Bundle)\s+\w+\s*\)\s*\{",
-              source
-          )
+                  @JavascriptInterface
+                  public void showInterstitial() {
+                      runOnUiThread(() -> {
+                          if (!isLocalPage()) return;
+                          if (interstitialAd == null) {
+                              fireEvent("unityAdNotReady");
+                              loadInterstitial();
+                              return;
+                          }
 
-          if method:
-              after = re.search(
-                  r"super\.onCreate\s*\(\s*\w+\s*\)\s*;",
-                  source[method.end():]
-              )
-              if not after:
-                  raise SystemExit("Could not locate super.onCreate().")
+                          InterstitialAd ad = interstitialAd;
+                          interstitialAd = null;
 
-              pos = method.end() + after.end()
-              source = source[:pos] + "\n" + init_code + source[pos:]
-          else:
-              activity = re.search(
-                  r"public\s+class\s+MainActivity\s+extends\s+BridgeActivity\s*\{",
-                  source
-              )
-              if not activity:
-                  raise SystemExit("Could not locate MainActivity class.")
+                          ad.show(MainActivity.this,
+                              new ShowConfiguration.Builder().build(),
+                              new InterstitialShowListener() {
+                                  @Override
+                                  public void onStarted(InterstitialAd ad) {}
 
-              new_method = (
-                  "\n    @Override\n"
-                  "    public void onCreate(android.os.Bundle savedInstanceState) {\n"
-                  "        super.onCreate(savedInstanceState);\n"
-                  + init_code + "\n"
-                  "    }\n"
-              )
+                                  @Override
+                                  public void onClicked(InterstitialAd ad) {}
 
-              pos = source.rfind("}")
-              if pos < activity.end():
-                  raise SystemExit("Could not locate class closing brace.")
+                                  @Override
+                                  public void onCompleted(
+                                      InterstitialAd ad, ShowFinishState state) {
+                                      loadInterstitial();
+                                  }
 
-              source = source[:pos] + new_method + source[pos:]
+                                  @Override
+                                  public void onFailed(
+                                      InterstitialAd ad, UnityAdsError error) {
+                                      Log.e("UnityAds", error.getMessage());
+                                      loadInterstitial();
+                                  }
+                              });
+                      });
+                  }
 
-          path.write_text(source)
-          print("Unity Ads initialization added.")
+                  @JavascriptInterface
+                  public void showRewarded() {
+                      runOnUiThread(() -> {
+                          if (!isLocalPage()) return;
+                          if (rewardedAd == null) {
+                              fireEvent("unityAdNotReady");
+                              loadRewarded();
+                              return;
+                          }
+
+                          RewardedAd ad = rewardedAd;
+                          rewardedAd = null;
+
+                          ad.show(MainActivity.this,
+                              new ShowConfiguration.Builder().build(),
+                              new RewardedShowListener() {
+                                  @Override
+                                  public void onStarted(RewardedAd ad) {}
+
+                                  @Override
+                                  public void onClicked(RewardedAd ad) {}
+
+                                  @Override
+                                  public void onCompleted(
+                                      RewardedAd ad, ShowFinishState state) {
+                                      loadRewarded();
+                                  }
+
+                                  @Override
+                                  public void onFailed(
+                                      RewardedAd ad, UnityAdsError error) {
+                                      Log.e("UnityAds", error.getMessage());
+                                      loadRewarded();
+                                  }
+
+                                  @Override
+                                  public void onRewarded(RewardedAd ad) {
+                                      fireEvent("unityRewardEarned");
+                                  }
+                              });
+                      });
+                  }
+              }
+          }
+          '''
+
+          path.write_text(java.replace("__PACKAGE__", package))
+
+          html_path = Path("www/index.html")
+          html = html_path.read_text()
+          marker = "<!-- UNITY_ADS_CONTROL_PANEL -->"
+
+          addon = r'''
+          <!-- UNITY_ADS_CONTROL_PANEL -->
+          <style>
+            body { padding-bottom: 72px !important; }
+            #unity-ads-controls {
+              position: fixed; right: 8px; bottom: 58px;
+              z-index: 2147483647; display: flex; gap: 6px;
+            }
+            #unity-ads-controls button {
+              padding: 7px 10px; border: 1px solid #ccc;
+              border-radius: 18px; background: white; color: #222;
+              font-size: 12px;
+            }
+          </style>
+          <div id="unity-ads-controls">
+            <button type="button" id="unity-reward-btn">Reward Ad</button>
+            <button type="button" id="unity-interstitial-btn">Full-screen Ad</button>
+          </div>
+          <script>
+          (function () {
+            document.getElementById("unity-reward-btn").onclick = function () {
+              if (window.UnityAdsBridge) window.UnityAdsBridge.showRewarded();
+            };
+            document.getElementById("unity-interstitial-btn").onclick = function () {
+              if (window.UnityAdsBridge) window.UnityAdsBridge.showInterstitial();
+            };
+            window.addEventListener("unityAdNotReady", function () {
+              alert("Ad is loading. Please try again in a few seconds.");
+            });
+            window.addEventListener("unityRewardEarned", function () {
+              alert("Rewarded ad completed. Connect this event to your app's actual reward.");
+            });
+          })();
+          </script>
+          '''
+
+          if marker not in html:
+              if re.search(r"</body\s*>", html, re.I):
+                  html = re.sub(
+                      r"</body\s*>", addon + "\n</body>",
+                      html, count=1, flags=re.I
+                  )
+              else:
+                  html += addon
+              html_path.write_text(html)
+
+          print("Unity Ads integration generated.")
           PY
 
+          npx cap copy android
+      
+                  
       - name: Build APK
         run: |
           cd android
