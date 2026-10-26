@@ -73,7 +73,7 @@ jobs:
           
           npx cap sync android
           npx @capacitor/assets generate --android
-
+          
                 - name: Initialize Unity Ads
         run: |
           python3 - <<'PY'
