@@ -1,4 +1,3 @@
-
 name: Build Interexive - Easy APK
 
 on:
@@ -65,39 +64,53 @@ jobs:
           EOF
 
           mkdir -p assets
-          test -f logo.png || { echo "ERROR: logo.png missing"; exit 1; }
+          test -f logo.png || { echo "ERROR: logo.png missing from repository root"; exit 1; }
           cp logo.png assets/icon.png
 
           if [ ! -d android ]; then
             npx cap add android
           fi
 
-          sed -i '/dependencies {/a\    implementation "com.unity3d.ads:unity-ads:4.21.0"' android/app/build.gradle
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gradle_file = Path("android/app/build.gradle")
+          content = gradle_file.read_text()
+          dependency = 'implementation "com.unity3d.ads:unity-ads:4.21.0"'
+
+          if dependency not in content:
+              if "dependencies {" not in content:
+                  raise SystemExit("Could not find dependencies block in app/build.gradle")
+              content = content.replace(
+                  "dependencies {",
+                  "dependencies {\n    " + dependency,
+                  1
+              )
+              gradle_file.write_text(content)
+              print("Unity Ads SDK dependency added.")
+          else:
+              print("Unity Ads SDK dependency already present.")
+          PY
 
           npx cap sync android
           npx @capacitor/assets generate --android
+
       - name: Integrate Unity Ads
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          files = list(
-              Path("android/app/src/main/java").rglob("MainActivity.java")
-          )
+          files = list(Path("android/app/src/main/java").rglob("MainActivity.java"))
           if len(files) != 1:
-              raise SystemExit(
-                  f"Expected one MainActivity.java, found {len(files)}"
-              )
+              raise SystemExit(f"Expected one MainActivity.java, found {len(files)}")
 
           path = files[0]
-          match = re.search(
-              r"^package\s+([\w.]+)\s*;", path.read_text(), re.M
-          )
+          match = re.search(r"^package\s+([\w.]+)\s*;", path.read_text(), re.M)
           if not match:
-              raise SystemExit("Cannot find Java package")
-
+              raise SystemExit("Cannot find Java package declaration")
           package = match.group(1)
 
           java = r'''package __PACKAGE__;
@@ -114,15 +127,14 @@ jobs:
 
           import com.getcapacitor.BridgeActivity;
           import com.unity3d.ads.BannerAd;
-          import com.unity3d.ads.BannerLoadConfiguration;
+          import com.unity3d.ads.BannerConfiguration;
+          import com.unity3d.ads.BannerShowListener;
           import com.unity3d.ads.BannerSize;
           import com.unity3d.ads.InitializationConfiguration;
           import com.unity3d.ads.InterstitialAd;
-          import com.unity3d.ads.InterstitialLoadListener;
           import com.unity3d.ads.InterstitialShowListener;
           import com.unity3d.ads.LoadConfiguration;
           import com.unity3d.ads.RewardedAd;
-          import com.unity3d.ads.RewardedLoadListener;
           import com.unity3d.ads.RewardedShowListener;
           import com.unity3d.ads.ShowConfiguration;
           import com.unity3d.ads.ShowFinishState;
@@ -136,10 +148,10 @@ jobs:
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   WebView webView = getBridge().getWebView();
-                  UnityAdsBridge ads = new UnityAdsBridge(webView);
-                  webView.addJavascriptInterface(ads, "UnityAdsBridge");
+                  UnityAdsBridge adsBridge = new UnityAdsBridge(webView);
+                  webView.addJavascriptInterface(adsBridge, "UnityAdsBridge");
                   webView.post(() -> webView.reload());
-                  ads.initialize();
+                  adsBridge.initialize();
               }
 
               public final class UnityAdsBridge {
@@ -175,9 +187,7 @@ jobs:
 
                   private void fireEvent(String name) {
                       webView.post(() -> webView.evaluateJavascript(
-                          "window.dispatchEvent(new Event('" + name + "'))",
-                          null
-                      ));
+                          "window.dispatchEvent(new Event('" + name + "'))", null));
                   }
 
                   @OptIn(markerClass = UnityAdsExperimental.class)
@@ -189,8 +199,7 @@ jobs:
 
                       UnityAds.initialize(config, error -> {
                           if (error != null) {
-                              Log.e("UnityAds",
-                                  "Initialization failed: " + error.getMessage());
+                              Log.e("UnityAds", "Initialization failed: " + error.getMessage());
                               return;
                           }
                           Log.d("UnityAds", "Initialization successful");
@@ -202,13 +211,25 @@ jobs:
 
                   @OptIn(markerClass = UnityAdsExperimental.class)
                   private void loadBanner() {
-                      BannerLoadConfiguration config =
-                          new BannerLoadConfiguration.Builder(
-                              BANNER_ID, new BannerSize(320, 50)
-                          ).build();
+                      BannerShowListener showListener = new BannerShowListener() {
+                          @Override
+                          public void onImpression(BannerAd ad) {}
+
+                          @Override
+                          public void onClicked(BannerAd ad) {}
+
+                          @Override
+                          public void onFailedToShow(BannerAd ad, UnityAdsError error) {
+                              Log.e("UnityAds", "Banner failed to show: " + error.getMessage());
+                          }
+                      };
+
+                      BannerConfiguration config = new BannerConfiguration.Builder(
+                          BANNER_ID, new BannerSize(320, 50), showListener
+                      ).build();
 
                       BannerAd.load(config, (loaded, error) -> {
-                          if (loaded == null) {
+                          if (loaded == null || error != null) {
                               Log.e("UnityAds", "Banner load failed: " +
                                   (error == null ? "Unknown error" : error.getMessage()));
                               return;
@@ -219,13 +240,10 @@ jobs:
                               View adView = loaded.getView();
                               if (adView == null) return;
 
-                              FrameLayout root =
-                                  (FrameLayout) findViewById(android.R.id.content);
-
+                              FrameLayout root = findViewById(android.R.id.content);
                               if (bannerSlot != null &&
                                   bannerSlot.getParent() instanceof ViewGroup) {
-                                  ((ViewGroup) bannerSlot.getParent())
-                                      .removeView(bannerSlot);
+                                  ((ViewGroup) bannerSlot.getParent()).removeView(bannerSlot);
                               }
 
                               bannerSlot = new FrameLayout(MainActivity.this);
@@ -235,8 +253,7 @@ jobs:
                                       dp(50), Gravity.BOTTOM));
 
                               if (adView.getParent() instanceof ViewGroup) {
-                                  ((ViewGroup) adView.getParent())
-                                      .removeView(adView);
+                                  ((ViewGroup) adView.getParent()).removeView(adView);
                               }
 
                               bannerSlot.addView(adView,
@@ -257,18 +274,16 @@ jobs:
                           new LoadConfiguration.Builder(INTERSTITIAL_ID).build(),
                           (loaded, error) -> runOnUiThread(() -> {
                               interstitialLoading = false;
-                              if (loaded == null) {
+                              if (loaded == null || error != null) {
                                   Log.e("UnityAds", "Interstitial load failed: " +
                                       (error == null ? "Unknown error" : error.getMessage()));
                                   return;
                               }
                               interstitialAd = loaded;
-                              loaded.setOnAdExpired(expired -> {
-                                  runOnUiThread(() -> {
-                                      interstitialAd = null;
-                                      loadInterstitial();
-                                  });
-                              });
+                              loaded.setOnAdExpired(expired -> runOnUiThread(() -> {
+                                  interstitialAd = null;
+                                  loadInterstitial();
+                              }));
                           })
                       );
                   }
@@ -282,18 +297,16 @@ jobs:
                           new LoadConfiguration.Builder(REWARDED_ID).build(),
                           (loaded, error) -> runOnUiThread(() -> {
                               rewardedLoading = false;
-                              if (loaded == null) {
+                              if (loaded == null || error != null) {
                                   Log.e("UnityAds", "Rewarded load failed: " +
                                       (error == null ? "Unknown error" : error.getMessage()));
                                   return;
                               }
                               rewardedAd = loaded;
-                              loaded.setOnAdExpired(expired -> {
-                                  runOnUiThread(() -> {
-                                      rewardedAd = null;
-                                      loadRewarded();
-                                  });
-                              });
+                              loaded.setOnAdExpired(expired -> runOnUiThread(() -> {
+                                  rewardedAd = null;
+                                  loadRewarded();
+                              }));
                           })
                       );
                   }
@@ -310,26 +323,16 @@ jobs:
 
                           InterstitialAd ad = interstitialAd;
                           interstitialAd = null;
-
                           ad.show(MainActivity.this,
                               new ShowConfiguration.Builder().build(),
                               new InterstitialShowListener() {
-                                  @Override
-                                  public void onStarted(InterstitialAd ad) {}
-
-                                  @Override
-                                  public void onClicked(InterstitialAd ad) {}
-
-                                  @Override
-                                  public void onCompleted(
-                                      InterstitialAd ad, ShowFinishState state) {
+                                  @Override public void onStarted(InterstitialAd ad) {}
+                                  @Override public void onClicked(InterstitialAd ad) {}
+                                  @Override public void onCompleted(InterstitialAd ad, ShowFinishState state) {
                                       loadInterstitial();
                                   }
-
-                                  @Override
-                                  public void onFailed(
-                                      InterstitialAd ad, UnityAdsError error) {
-                                      Log.e("UnityAds", error.getMessage());
+                                  @Override public void onFailed(InterstitialAd ad, UnityAdsError error) {
+                                      Log.e("UnityAds", "Interstitial show failed: " + error.getMessage());
                                       loadInterstitial();
                                   }
                               });
@@ -348,31 +351,19 @@ jobs:
 
                           RewardedAd ad = rewardedAd;
                           rewardedAd = null;
-
                           ad.show(MainActivity.this,
                               new ShowConfiguration.Builder().build(),
                               new RewardedShowListener() {
-                                  @Override
-                                  public void onStarted(RewardedAd ad) {}
-
-                                  @Override
-                                  public void onClicked(RewardedAd ad) {}
-
-                                  @Override
-                                  public void onCompleted(
-                                      RewardedAd ad, ShowFinishState state) {
+                                  @Override public void onStarted(RewardedAd ad) {}
+                                  @Override public void onClicked(RewardedAd ad) {}
+                                  @Override public void onCompleted(RewardedAd ad, ShowFinishState state) {
                                       loadRewarded();
                                   }
-
-                                  @Override
-                                  public void onFailed(
-                                      RewardedAd ad, UnityAdsError error) {
-                                      Log.e("UnityAds", error.getMessage());
+                                  @Override public void onFailed(RewardedAd ad, UnityAdsError error) {
+                                      Log.e("UnityAds", "Rewarded show failed: " + error.getMessage());
                                       loadRewarded();
                                   }
-
-                                  @Override
-                                  public void onRewarded(RewardedAd ad) {
+                                  @Override public void onRewarded(RewardedAd ad) {
                                       fireEvent("unityRewardEarned");
                                   }
                               });
@@ -387,7 +378,6 @@ jobs:
           html_path = Path("www/index.html")
           html = html_path.read_text()
           marker = "<!-- UNITY_ADS_CONTROL_PANEL -->"
-
           addon = r'''
           <!-- UNITY_ADS_CONTROL_PANEL -->
           <style>
@@ -418,7 +408,7 @@ jobs:
               alert("Ad is loading. Please try again in a few seconds.");
             });
             window.addEventListener("unityRewardEarned", function () {
-              alert("Rewarded ad completed. Connect this event to your app's actual reward.");
+              alert("Rewarded ad completed.");
             });
           })();
           </script>
@@ -426,10 +416,8 @@ jobs:
 
           if marker not in html:
               if re.search(r"</body\s*>", html, re.I):
-                  html = re.sub(
-                      r"</body\s*>", addon + "\n</body>",
-                      html, count=1, flags=re.I
-                  )
+                  html = re.sub(r"</body\s*>", addon + "\n</body>", html,
+                                count=1, flags=re.I)
               else:
                   html += addon
               html_path.write_text(html)
@@ -438,8 +426,7 @@ jobs:
           PY
 
           npx cap copy android
-      
-                  
+
       - name: Build APK
         run: |
           cd android
